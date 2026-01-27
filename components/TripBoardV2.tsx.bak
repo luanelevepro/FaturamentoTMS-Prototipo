@@ -1,0 +1,1054 @@
+import React, { useState, useMemo } from 'react';
+import { Trip, AvailableDocument, Vehicle, Load, Leg, Delivery } from '../types';
+
+import {
+    Truck, MapPin, Play, CheckCircle, Package, ArrowRight, X, Calendar, MoreVertical, Eye, Info, FileText, User, ChevronRight, ChevronDown, AlertCircle, Clock, Plus, Route, Tag, Link as LinkIcon, Check
+} from 'lucide-react';
+import { TripDetails } from './TripDetails';
+import { BoardColumn as Column, BoardCard as Card, EmptyState } from './BoardUI';
+
+interface TripBoardV2Props {
+    trips: Trip[];
+    loads: Load[];
+    vehicles: Vehicle[];
+    availableDocs: AvailableDocument[];
+    clients: { name: string, address: string }[];
+    cities: string[];
+    onCreateNew: () => void;
+    // Handlers
+    onCreateLoad: (loadData: Omit<Load, 'id' | 'status'>) => void;
+    onScheduleLoad: (load: Load, vehicle: Vehicle, segment: string, customOrigin: string, controlNumber: string) => void;
+    onUpdateStatus: (tripId: string, status: Trip['status'], pod?: string) => void;
+    onUpdateDeliveryStatus: (tripId: string, legId: string, deliveryId: string, status: Delivery['status'], pod?: string) => void;
+    // Others
+    onAddLeg: (tripId: string, leg: any) => void;
+    onAddDelivery: (tripId: string, legId: string, selectedDocs: AvailableDocument[]) => void;
+    onAddDocument: (tripId: string, legId: string, deliveryId: string, doc: any) => void;
+    onCreateTrip: (tripData: any) => void;
+    onAddLoadWithDeliveries?: (tripId: string, payload: any) => void;
+    onAttachLoadsToTrip?: (tripId: string, payload: { loadIds: string[]; vehicleTypeReq: string }) => void;
+    onReorderDeliveries?: (tripId: string, legId: string, newOrder: Delivery[]) => void;
+}
+
+const BODY_TYPE_OPTIONS = [
+    'Frigorífico',
+    'Graneleira',
+    'Baú',
+    'Sider',
+    'Prancha',
+    'Basculante',
+    'Porta-Container',
+    'Cegonheira'
+];
+
+const REQUIREMENTS_OPTIONS = [
+    'EPI Básico (Capacete/Bota)', 'EPI Completo (Óculos/Luva)',
+    'Ajudante Extra', 'Paletes Vazios',
+    'Corda / Cinta de Amarração', 'Lona de Proteção',
+    'Manuseio Frágil', 'Rastreamento em Tempo Real'
+];
+
+export const TripBoardV2: React.FC<TripBoardV2Props> = ({
+    trips,
+    loads,
+    vehicles,
+    availableDocs,
+    clients,
+    cities,
+    onCreateNew,
+    onCreateLoad,
+    onScheduleLoad,
+    onUpdateStatus,
+    onUpdateDeliveryStatus,
+    onAddLeg,
+    onAddDelivery,
+    onAddDocument,
+    onCreateTrip,
+    onAddLoadWithDeliveries,
+    onAttachLoadsToTrip,
+    onReorderDeliveries
+}) => {
+
+
+    const [schedulingLoad, setSchedulingLoad] = useState<Load | null>(null);
+    const [selectedSegment, setSelectedSegment] = useState(''); // agora usado como "tipo de carroceria"
+    const [customOrigin, setCustomOrigin] = useState('');
+    const [controlNumber, setControlNumber] = useState('');
+
+    // Create Load Modal State
+    const [isCreateLoadOpen, setIsCreateLoadOpen] = useState(false);
+    const [newLoadForm, setNewLoadForm] = useState<Omit<Load, 'id' | 'status'>>({
+        clientName: '',
+        originCity: '',
+        destinationCity: '',
+        collectionDate: new Date().toISOString().split('T')[0],
+        vehicleTypeReq: '',
+        requirements: [],
+        observations: ''
+    });
+
+    // View Details Modal State
+    const [detailsData, setDetailsData] = useState<any | null>(null);
+    const [detailsTitle, setDetailsTitle] = useState('');
+
+    // Document Form State
+    const [showAddDoc, setShowAddDoc] = useState<string | null>(null); // deliveryId
+
+    const [newDocForm, setNewDocForm] = useState({ number: '', type: 'NF' as 'NF' | 'CTe', value: '' });
+
+    // POD Modal State
+    const [podTrip, setPodTrip] = useState<Trip | null>(null);
+    const [podFile, setPodFile] = useState<string | null>(null); // For mock file upload
+
+    const handleSaveDoc = (tripId: string, legId: string, deliveryId: string) => {
+        if (!newDocForm.number) {
+            alert("Número do documento é obrigatório.");
+            return;
+        }
+        onAddDocument(tripId, legId, deliveryId, {
+            number: newDocForm.number,
+            type: newDocForm.type,
+            value: Number(newDocForm.value) || 0,
+            controlNumber: 'MANUAL'
+        });
+        setShowAddDoc(null);
+        setNewDocForm({ number: '', type: 'NF', value: '' });
+    };
+
+    // --- Filter Lists ---
+    const availableVehicles = useMemo(() => vehicles.filter(v => v.status === 'Available'), [vehicles]);
+    const inUseVehicles = useMemo(() => vehicles.filter(v => v.status !== 'Available'), [vehicles]);
+
+    const plannedTrips = useMemo(() => trips.filter(t => t.status === 'Planned'), [trips]);
+    const pickingUpTrips = useMemo(() => trips.filter(t => t.status === 'Picking Up'), [trips]);
+    const activeTrips = useMemo(() => trips.filter(t => t.status === 'In Transit'), [trips]);
+    const completedTrips = useMemo(() => trips.filter(t => t.status === 'Completed'), [trips]);
+
+    const parseMaybeDate = (value?: string) => {
+        if (!value) return 0;
+        const t = new Date(value).getTime();
+        return Number.isFinite(t) ? t : 0;
+    };
+
+    const sortedLoads = useMemo(() => {
+        return [...loads].sort((a, b) => parseMaybeDate(a.collectionDate) - parseMaybeDate(b.collectionDate));
+    }, [loads]);
+
+    const inUseVehiclesSorted = useMemo(() => {
+        const getEta = (plate: string) => {
+            const trip = trips.find(t =>
+                t.truckPlate === plate &&
+                t.status !== 'Completed'
+            );
+            return parseMaybeDate(trip?.estimatedReturnDate) || parseMaybeDate(trip?.scheduledDate) || parseMaybeDate(trip?.createdAt);
+        };
+
+        return [...inUseVehicles].sort((a, b) => getEta(a.plate) - getEta(b.plate));
+    }, [inUseVehicles, trips]);
+
+    // Helper to check if a vehicle is busy
+    const isVehicleBusy = (plate: string) => {
+        return trips.some(t =>
+            (t.status === 'In Transit' || t.status === 'Picking Up') &&
+            t.truckPlate === plate
+        );
+    };
+
+    // --- Handlers ---
+    const handleOpenSchedule = (load: Load) => {
+        setSchedulingLoad(load);
+        setSelectedSegment('');
+        setControlNumber('');
+        setCustomOrigin(load.originCity);
+    };
+
+    const handleConfirmSchedule = (vehicle: Vehicle) => {
+        if (schedulingLoad) {
+            if (!selectedSegment) {
+                alert('Por favor, selecione o tipo de carroceria para a carga.');
+                return;
+            }
+            onScheduleLoad(schedulingLoad, vehicle, selectedSegment, customOrigin, controlNumber);
+            setSchedulingLoad(null);
+        }
+    };
+
+    const handleCreateLoadSubmit = (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!newLoadForm.clientName || !newLoadForm.originCity) {
+            alert('Preencha os campos obrigatórios (Cliente e Origem)');
+            return;
+        }
+        onCreateLoad(newLoadForm);
+        setIsCreateLoadOpen(false);
+        setNewLoadForm({
+            originCity: '',
+            destinationCity: '',
+            collectionDate: new Date().toISOString().split('T')[0],
+            vehicleTypeReq: '',
+            requirements: [],
+            observations: ''
+        });
+    };
+
+    const handleViewDetails = (title: string, data: any) => {
+        setDetailsTitle(title);
+        setDetailsData(data);
+    };
+
+    return (
+        <div className="flex flex-col h-screen overflow-hidden bg-gray-100 font-sans relative text-gray-800">
+
+            {/* Header */}
+            {/* Header Removed (Handled by Parent) but we might want to keep the board content wrapper */
+/* NOTE: The parent now renders the header. We should probably accept the header as prop or just render the board content.
+   For now, we'll return JUST the board content wrapper if we want to seamlessly integrate. 
+   However, TripBoardV2 still has local specific states like "Create Load Modal". 
+   Let's keep the Create Load button but maybe move the header to be simpler or remove it since Parent has a header. 
+   
+   Actually, let's REMOVE the header from here entirely to avoid double headers.
+*/ }
+
+            {/* DMAIC / Kanban Board */}
+            <div className="flex-1 overflow-x-auto overflow-y-hidden p-6 custom-scrollbar">
+                <div className="flex gap-4 h-full min-w-[1800px]">
+
+                    {/* COL 1: Cargas Disponíveis - CINZA */}
+                    <Column
+                        title="Cargas Disponíveis"
+                        count={loads.length}
+                        headerColor="bg-gray-100 border-gray-400"
+                        accentColor="gray"
+                        tooltip="Cargas programadas, mas ainda não vinculada a nenhuma viagem."
+                    >
+                        <div className="space-y-4">
+                            {loads.length === 0 && <EmptyState text="Nenhuma carga pendente" />}
+                            {sortedLoads.map(load => (
+                                <Card key={load.id} accentColor="gray">
+                                    <div className="flex justify-between items-start mb-3">
+                                        <span className="text-[10px] font-black text-gray-500 bg-gray-50 px-2 py-0.5 rounded border border-gray-200 uppercase">
+                                            Pendente
+                                        </span>
+                                        {load.collectionDate && (
+                                            <span className="text-[10px] font-black text-gray-500 flex items-center gap-1 uppercase tracking-tighter">
+                                                <Calendar size={12} /> {new Date(load.collectionDate).toLocaleDateString('pt-BR')}
+                                            </span>
+                                        )}
+                                        <button onClick={() => handleViewDetails(`Carga: ${load.clientName}`, { type: 'LOAD_DETAIL', ...load })} className="text-gray-300 hover:text-gray-900 transition-colors">
+                                            <Eye size={16} />
+                                        </button>
+                                    </div>
+                                    <div className="mb-4">
+                                        <div className="font-black text-gray-900 text-sm uppercase tracking-tight">{load.clientName}</div>
+                                        <div className="space-y-1.5 mt-3">
+                                            <div className="text-xs font-bold text-gray-500 flex items-center gap-2">
+                                                <MapPin size={14} className="text-gray-300" /> {load.originCity}
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <button
+                                        onClick={() => handleOpenSchedule(load)}
+                                        className="w-full py-2.5 bg-black hover:bg-gray-800 text-white text-[10px] font-black rounded-xl shadow-md transition-all uppercase tracking-widest"
+                                    >
+                                        Programar Veículo
+                                    </button>
+                                </Card>
+                            ))}
+                        </div>
+                    </Column>
+
+                    {/* COL 2: Veículos Disponíveis - CINZA */}
+                    <Column
+                        title="Veículos Disponíveis"
+                        count={availableVehicles.length}
+                        headerColor="bg-gray-100 border-gray-400"
+                        accentColor="gray"
+                        tooltip="Veículos + motoristas disponíveis, em prioridade de disponibilidade."
+                    >
+                        <div className="space-y-4">
+                            {availableVehicles.length === 0 && <EmptyState text="Sem veículos livres" />}
+                            {availableVehicles.map(v => (
+                                <Card key={v.id} accentColor="gray">
+                                    <div className="flex justify-between items-start mb-3">
+                                        <div className="font-black text-gray-900 text-base font-mono bg-gray-50 px-2 rounded border border-gray-100">{v.plate}</div>
+                                        <span className="text-[10px] uppercase font-black text-gray-400">Livre</span>
+                                    </div>
+                                    <div className="text-xs text-gray-500 mb-4 font-bold">{v.model} • <span className="uppercase">{v.type}</span></div>
+                                    <div className="flex items-center gap-3 text-xs text-gray-700 bg-gray-50 p-2.5 rounded-xl border border-gray-100">
+                                        <div className="w-6 h-6 rounded-full bg-gray-200 flex items-center justify-center font-black text-[10px] text-gray-600">
+                                            {v.driverName ? v.driverName.substring(0, 2).toUpperCase() : '?'}
+                                        </div>
+                                        <span className="font-black">{v.driverName || 'Sem motorista'}</span>
+                                    </div>
+                                </Card>
+                            ))}
+
+                            {/* Ocupados (bem abaixo) */}
+                            {inUseVehiclesSorted.length > 0 && (
+                                <div className="pt-6">
+                                    <div className="text-[10px] font-black text-gray-300 uppercase tracking-[0.25em] px-2 mb-3">
+                                        Em operação ({inUseVehiclesSorted.length})
+                                    </div>
+                                    <div className="space-y-3 opacity-60 grayscale">
+                                        {inUseVehiclesSorted.map(v => {
+                                            const trip = trips.find(t => t.truckPlate === v.plate && t.status !== 'Completed');
+                                            const eta = trip?.estimatedReturnDate ? new Date(trip.estimatedReturnDate).toLocaleDateString('pt-BR') : undefined;
+                                            return (
+                                                <Card key={`busy-${v.id}`} accentColor="gray">
+                                                    <div className="flex justify-between items-start mb-2">
+                                                        <div className="font-black text-gray-700 text-base font-mono bg-gray-50 px-2 rounded border border-gray-100">{v.plate}</div>
+                                                        <span className="text-[10px] uppercase font-black text-gray-300">Ocupado</span>
+                                                    </div>
+                                                    <div className="text-[10px] text-gray-400 mb-2 font-bold">
+                                                        {v.model} • <span className="uppercase">{v.type}</span>
+                                                    </div>
+                                                    <div className="text-[10px] text-gray-400 font-bold">
+                                                        Motorista: <span className="text-gray-600">{v.driverName || 'Não informado'}</span>
+                                                    </div>
+                                                    {eta && (
+                                                        <div className="text-[10px] text-gray-400 font-bold mt-1">
+                                                            Prev. chegada: <span className="text-gray-600">{eta}</span>
+                                                        </div>
+                                                    )}
+                                                </Card>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    </Column>
+
+                    {/* COL 3: Viagem Agendada - AZUL */}
+                    <TripColumn
+                        title="Viagem Agendada"
+                        trips={plannedTrips}
+                        headerColor="bg-blue-50 border-blue-500 text-blue-900"
+                        accentColor="blue"
+                        tooltip="Junção de motorista+conjunto, e carga."
+                        statusColor="text-blue-600 bg-white border-blue-200"
+                        statusLabel="Aguardando"
+                        onViewDetails={handleViewDetails}
+                        actionButton={(trip) => {
+                            const busy = isVehicleBusy(trip.truckPlate);
+                            return (
+                                <button
+                                    disabled={busy}
+                                    onClick={() => onUpdateStatus(trip.id, 'Picking Up')}
+                                    className={`flex items-center gap-2 px-5 py-2 text-white text-[10px] font-black rounded-xl shadow-lg uppercase tracking-widest transition-all
+                                ${busy ? 'bg-gray-300 cursor-not-allowed grayscale' : 'bg-black hover:bg-gray-800'}`}
+                                >
+                                    <Play size={14} fill="white" /> Iniciar Coleta
+                                </button>
+                            )
+                        }}
+                    />
+
+                    {/* COL 4: Em Coleta - AMARELO */}
+                    <TripColumn
+                        title="Em Coleta"
+                        trips={pickingUpTrips}
+                        headerColor="bg-yellow-50 border-yellow-400 text-yellow-900"
+                        accentColor="yellow"
+                        tooltip="Inicio da viagem, mas ainda sem sem a respectiva carga."
+                        statusColor="text-yellow-600 bg-white border-yellow-200"
+                        statusLabel="Coletando"
+                        onViewDetails={handleViewDetails}
+                        showProgress
+                        actionButton={(trip) => (
+                            <button
+                                onClick={() => onUpdateStatus(trip.id, 'In Transit')}
+                                className="flex items-center gap-2 px-5 py-2 bg-black hover:bg-gray-800 text-white text-[10px] font-black rounded-xl shadow-lg uppercase tracking-widest transition-all"
+                            >
+                                <Truck size={14} /> Iniciar Viagem
+                            </button>
+                        )}
+                    />
+
+                    {/* COL 5: Em Rota - LARANJA */}
+                    <TripColumn
+                        title="Em Rota"
+                        trips={activeTrips}
+                        headerColor="bg-orange-50 border-orange-500 text-orange-900"
+                        accentColor="orange"
+                        tooltip="Já carregado e iniciou seu percurso de carga/entrega."
+                        statusColor="text-orange-600 bg-white border-orange-200"
+                        statusLabel="Em Trânsito"
+                        showProgress
+                        onViewDetails={handleViewDetails}
+                        actionButton={(trip) => (
+                            <button
+                                onClick={() => setPodTrip(trip)}
+                                className="flex items-center gap-2 px-5 py-2 bg-black hover:bg-gray-800 text-white text-[10px] font-black rounded-xl shadow-lg uppercase tracking-widest transition-all"
+                            >
+                                <CheckCircle size={14} /> Finalizar
+                            </button>
+                        )}
+                    />
+
+                    {/* COL 6: Entregue - VERDE */}
+                    <TripColumn
+                        title="Viagem Entregue"
+                        trips={completedTrips}
+                        headerColor="bg-emerald-50 border-emerald-500 text-emerald-900"
+                        accentColor="emerald"
+                        tooltip="Motorista fez a ida e o retorno, está de volta na cidade da empresa e concluiu a viagem."
+                        statusColor="text-emerald-600 bg-white border-emerald-200"
+                        statusLabel="Concluído"
+                        isCompleted
+                        onViewDetails={handleViewDetails}
+                    />
+
+                </div>
+            </div>
+
+            {/* --- CREATE LOAD MODAL --- */}
+            {isCreateLoadOpen && (
+                <div className="absolute inset-0 z-50 bg-black/70 backdrop-blur-md flex items-center justify-center p-4">
+                    <div className="bg-white rounded-3xl shadow-2xl w-full max-w-2xl overflow-hidden animate-in zoom-in-95 duration-200 flex flex-col max-h-[90vh]">
+                        <div className="p-6 border-b border-gray-100 flex justify-between items-center bg-gray-50/50 shrink-0">
+                            <div>
+                                <h3 className="font-black text-xl text-gray-900 tracking-tighter uppercase">Nova Carga</h3>
+                                <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest mt-1">Cadastrar transporte e requisitos</p>
+                            </div>
+                            <button onClick={() => setIsCreateLoadOpen(false)} className="p-2 hover:bg-gray-200 rounded-full transition-colors"><X size={24} /></button>
+                        </div>
+                        <form onSubmit={handleCreateLoadSubmit} className="flex-1 overflow-y-auto p-8 custom-scrollbar">
+                            <div className="space-y-6">
+
+                                {/* Row 1: Client & Vehicle Type */}
+                                <div className="grid grid-cols-2 gap-5">
+                                    <div>
+                                        <label className="block text-[10px] font-black text-gray-400 mb-2 uppercase tracking-widest">Cliente *</label>
+                                        <select
+                                            className="w-full border-2 border-gray-100 bg-gray-50 rounded-xl p-3 text-sm outline-none focus:border-black focus:bg-white transition-all font-bold"
+                                            value={newLoadForm.clientName} onChange={e => setNewLoadForm({ ...newLoadForm, clientName: e.target.value })}
+                                        >
+                                            <option value="">Selecione...</option>
+                                            {clients.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label className="block text-[10px] font-black text-gray-400 mb-2 uppercase tracking-widest">Tipo de Carroceria Exigida</label>
+                                        <select
+                                            className="w-full border-2 border-gray-100 bg-gray-50 rounded-xl p-3 text-sm outline-none focus:border-black focus:bg-white transition-all font-bold"
+                                            value={newLoadForm.vehicleTypeReq} onChange={e => setNewLoadForm({ ...newLoadForm, vehicleTypeReq: e.target.value })}
+                                        >
+                                            <option value="">Qualquer (Recomendado)</option>
+                                            {BODY_TYPE_OPTIONS.map(t => <option key={t} value={t}>{t}</option>)}
+                                        </select>
+                                    </div>
+                                </div>
+
+                                {/* Row 2: Origin & Dest */}
+                                <div className="grid grid-cols-2 gap-5">
+                                    <div>
+                                        <label className="block text-[10px] font-black text-gray-400 mb-2 uppercase tracking-widest">Origem *</label>
+                                        <select
+                                            className="w-full border-2 border-gray-100 bg-gray-50 rounded-xl p-3 text-sm outline-none focus:border-black focus:bg-white transition-all font-bold"
+                                            value={newLoadForm.originCity} onChange={e => setNewLoadForm({ ...newLoadForm, originCity: e.target.value })}
+                                        >
+                                            <option value="">Selecione...</option>
+                                            {cities.map(city => <option key={`orig-${city}`} value={city}>{city}</option>)}
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label className="block text-[10px] font-black text-gray-400 mb-2 uppercase tracking-widest">Destino *</label>
+                                        <select
+                                            className="w-full border-2 border-gray-100 bg-gray-50 rounded-xl p-3 text-sm outline-none focus:border-black focus:bg-white transition-all font-bold"
+                                            value={newLoadForm.destinationCity} onChange={e => setNewLoadForm({ ...newLoadForm, destinationCity: e.target.value })}
+                                        >
+                                            <option value="">Selecione...</option>
+                                            {cities.map(city => <option key={`dest-${city}`} value={city}>{city}</option>)}
+                                        </select>
+                                    </div>
+                                </div>
+
+                                {/* Row 3: Requirements */}
+                                <div className="bg-gray-50 p-5 rounded-2xl border border-gray-100">
+                                    <label className="block text-[10px] font-black text-gray-400 mb-3 uppercase tracking-widest">Requisitos Especiais</label>
+                                    <div className="grid grid-cols-2 gap-3">
+                                        {REQUIREMENTS_OPTIONS.map(req => {
+                                            const isChecked = newLoadForm.requirements?.includes(req);
+                                            return (
+                                                <div
+                                                    key={req}
+                                                    onClick={() => {
+                                                        const current = newLoadForm.requirements || [];
+                                                        const updated = isChecked ? current.filter(r => r !== req) : [...current, req];
+                                                        setNewLoadForm({ ...newLoadForm, requirements: updated });
+                                                    }}
+                                                    className={`
+                                                flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-all
+                                                ${isChecked ? 'bg-white border-green-500 shadow-sm' : 'border-gray-200 hover:bg-white'}
+                                            `}
+                                                >
+                                                    <div className={`w-4 h-4 rounded border flex items-center justify-center ${isChecked ? 'bg-green-500 border-green-500 text-white' : 'border-gray-300'}`}>
+                                                        {isChecked && <Check size={10} strokeWidth={4} />}
+                                                    </div>
+                                                    <span className={`text-xs font-bold ${isChecked ? 'text-green-700' : 'text-gray-500'}`}>{req}</span>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+
+                                {/* Row 4: Date & Obs */}
+                                <div className="space-y-4">
+                                    <div>
+                                        <label className="block text-[10px] font-black text-gray-400 mb-2 uppercase tracking-widest">Data e Hora da Coleta (Opcional)</label>
+                                        <input
+                                            type="datetime-local" className="w-full border-2 border-gray-100 bg-gray-50 rounded-xl p-3 text-sm outline-none focus:border-black focus:bg-white transition-all font-bold"
+                                            value={newLoadForm.collectionDate} onChange={e => setNewLoadForm({ ...newLoadForm, collectionDate: e.target.value })}
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-[10px] font-black text-gray-400 mb-2 uppercase tracking-widest">Observações</label>
+                                        <textarea
+                                            className="w-full border-2 border-gray-100 bg-gray-50 rounded-xl p-3 text-sm outline-none focus:border-black focus:bg-white transition-all font-medium resize-none h-24"
+                                            placeholder="Detalhes adicionais..."
+                                            value={newLoadForm.observations} onChange={e => setNewLoadForm({ ...newLoadForm, observations: e.target.value })}
+                                        />
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="flex justify-end gap-5 mt-10 pt-6 border-t border-gray-100">
+                                <button type="button" onClick={() => setIsCreateLoadOpen(false)} className="px-6 py-4 text-[10px] font-black text-gray-400 hover:text-gray-600 transition-colors uppercase tracking-widest">Cancelar</button>
+                                <button type="submit" className="bg-black text-white px-8 py-3 rounded-xl text-xs font-black shadow-xl hover:bg-gray-800 active:scale-95 transition-all uppercase tracking-widest flex items-center gap-2">
+                                    <Plus size={16} /> Registrar Carga
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            )}
+
+            {/* --- SCHEDULING MODAL --- */}
+            {schedulingLoad && (
+                <div className="absolute inset-0 z-50 bg-black/70 backdrop-blur-md flex items-center justify-center p-4">
+                    <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden animate-in slide-in-from-bottom-10">
+                        <div className="p-6 border-b border-gray-100 flex justify-between items-center bg-gray-50">
+                            <div>
+                                <h3 className="font-black text-xl text-gray-900 tracking-tighter uppercase">Programação</h3>
+                                <p className="text-[10px] text-blue-600 font-bold uppercase tracking-widest mt-1">{schedulingLoad.clientName}</p>
+                            </div>
+                            <button onClick={() => setSchedulingLoad(null)} className="p-2 hover:bg-gray-200 rounded-full transition-colors"><X size={20} /></button>
+                        </div>
+
+                        <div className="p-7 space-y-7">
+                            <div className="bg-black p-5 rounded-3xl border-2 border-gray-800 shadow-2xl">
+                                <label className="block text-[9px] font-black text-gray-500 mb-2 uppercase tracking-widest leading-none">Nº de Controle Operacional <span className="text-white">*</span></label>
+                                <input
+                                    type="text" className="w-full border-2 border-gray-800 bg-gray-900 text-white rounded-2xl p-4 text-base outline-none focus:border-blue-500 transition-all font-black placeholder:text-gray-700"
+                                    value={controlNumber} onChange={(e) => setControlNumber(e.target.value)}
+                                    placeholder="Opcional (pode ficar em branco)..."
+                                    autoFocus
+                                />
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-5">
+                                <div>
+                                    <label className="block text-[9px] font-black text-gray-400 mb-2 uppercase tracking-widest">Tipo de Carroceria <span className="text-red-500">*</span></label>
+                                    <select
+                                        className="w-full border-2 border-gray-100 bg-gray-50 rounded-2xl p-4 text-xs outline-none focus:border-black font-black transition-all bg-white"
+                                        value={selectedSegment} onChange={(e) => setSelectedSegment(e.target.value)}
+                                    >
+                                        <option value="">Escolha...</option>
+                                        {BODY_TYPE_OPTIONS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                                    </select>
+                                </div>
+                                <div>
+                                    <label className="block text-[9px] font-black text-gray-400 mb-2 uppercase tracking-widest">Cidade Origem</label>
+                                    <input
+                                        type="text" className="w-full border-2 border-gray-100 bg-gray-50 rounded-2xl p-4 text-xs outline-none focus:border-black font-black transition-all"
+                                        value={customOrigin} onChange={(e) => setCustomOrigin(e.target.value)}
+                                    />
+                                </div>
+                            </div>
+
+                            <div className="space-y-4">
+                                <div className="text-[9px] font-black text-gray-400 uppercase tracking-widest mb-1 px-1">Conjuntos Disponíveis</div>
+                                {availableVehicles.map(v => (
+                                    <div
+                                        key={v.id}
+                                        onClick={() => handleConfirmSchedule(v)}
+                                        className={`p-4 border-2 rounded-2xl cursor-pointer transition-all flex justify-between items-center group
+                                  ${(!selectedSegment) ? 'opacity-40 grayscale pointer-events-none' : 'border-gray-50 bg-gray-50 hover:border-black hover:bg-white shadow-sm'}
+                              `}
+                                    >
+                                        <div className="flex items-center gap-4">
+                                            <div className="p-2 bg-white rounded-xl border border-gray-200 group-hover:border-black group-hover:bg-black group-hover:text-white transition-all">
+                                                <Truck size={20} />
+                                            </div>
+                                            <div>
+                                                <div className="font-black text-gray-900 text-sm font-mono">{v.plate}</div>
+                                                <div className="text-[9px] text-gray-400 font-bold uppercase">{v.driverName}</div>
+                                            </div>
+                                        </div>
+                                        <ChevronRight size={24} className="text-gray-300 group-hover:text-black transition-all" />
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* --- WIZARD MODAL --- */}
+            {isWizardOpen && (
+                <div className="absolute inset-0 z-[70] bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
+                    <div className="bg-white rounded-3xl shadow-2xl w-full max-w-4xl overflow-hidden flex flex-col max-h-[90vh] animate-in zoom-in-95 duration-300 border border-white/10">
+
+                        {/* Wizard Header */}
+                        <div className="p-8 border-b border-gray-100 flex justify-between items-center bg-gray-50 shrink-0">
+                            <div>
+                                <h3 className="font-black text-2xl tracking-tighter text-gray-900 uppercase flex items-center gap-3">
+                                    <span className="bg-black text-white w-8 h-8 rounded-full flex items-center justify-center text-sm">{wizardStep}</span>
+                                    Nova Viagem
+                                </h3>
+                                <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest mt-1 ml-11">
+                                    {wizardStep === 1 ? 'Selecione as Cargas' : 'Defina o Veículo e Motorista'}
+                                </p>
+                            </div>
+                            <button onClick={() => setIsWizardOpen(false)} className="p-3 hover:bg-gray-200 rounded-full transition-colors"><X size={24} /></button>
+                        </div>
+
+                        {/* Wizard Content */}
+                        <div className="flex-1 overflow-y-auto p-10 custom-scrollbar bg-white">
+                            {wizardStep === 1 && (
+                                <div className="space-y-6">
+                                    <h4 className="text-xs font-black text-gray-400 uppercase tracking-widest">Cargas Disponíveis ({loads.length})</h4>
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                        {loads.map(load => {
+                                            const isSelected = selectedLoads.some(l => l.id === load.id);
+                                            return (
+                                                <div
+                                                    key={load.id}
+                                                    onClick={() => {
+                                                        if (isSelected) setSelectedLoads(prev => prev.filter(l => l.id !== load.id));
+                                                        else setSelectedLoads(prev => [...prev, load]);
+                                                    }}
+                                                    className={`
+                                                p-5 rounded-3xl border-2 cursor-pointer transition-all flex justify-between items-center
+                                                ${isSelected ? 'border-blue-500 bg-blue-50 shadow-md ring-1 ring-blue-500' : 'border-gray-100 bg-white hover:border-gray-300 hover:bg-gray-50'}
+                                            `}
+                                                >
+                                                    <div>
+                                                        <div className="text-[9px] font-black text-gray-400 uppercase tracking-widest mb-1">
+                                                            {load.originCity} ➔ {load.destinationCity || 'A definir'}
+                                                        </div>
+                                                        <div className="text-sm font-black text-gray-900 uppercase tracking-tighter">{load.clientName}</div>
+                                                        <div className="text-[10px] text-gray-500 font-bold mt-2 flex items-center gap-1">
+                                                            <Calendar size={12} /> {new Date(load.collectionDate).toLocaleDateString()}
+                                                        </div>
+                                                    </div>
+                                                    {isSelected && <CheckCircle className="text-blue-600" size={24} />}
+                                                </div>
+                                            );
+                                        })}
+                                        {loads.length === 0 && <div className="col-span-2 text-center text-gray-400 py-10">Nenhuma carga disponível.</div>}
+                                    </div>
+                                </div>
+                            )}
+
+                            {wizardStep === 2 && (
+                                <div className="space-y-8">
+                                    {/* Selected Loads Summary */}
+                                    <div className="flex gap-3 overflow-x-auto pb-2">
+                                        {selectedLoads.map(l => (
+                                            <div key={l.id} className="bg-blue-50 px-4 py-2 rounded-xl border border-blue-100 shrink-0">
+                                                <div className="text-[8px] font-black text-blue-400 uppercase tracking-widest">Carga</div>
+                                                <div className="text-xs font-black text-blue-900 uppercase">{l.clientName}</div>
+                                            </div>
+                                        ))}
+                                    </div>
+
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-10">
+                                        <div className="space-y-6">
+                                            <h4 className="text-xs font-black text-gray-400 uppercase tracking-widest">Selecionar Cavalo/Conjunto</h4>
+
+                                            {/* Categorized List */}
+                                            <div className="space-y-6 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
+
+                                                {/* Recommended */}
+                                                <div>
+                                                    <div className="flex items-center gap-2 mb-2 text-green-600">
+                                                        <CheckCircle size={12} />
+                                                        <span className="text-[10px] font-black uppercase tracking-widest">Recomendados (Disponíveis)</span>
+                                                    </div>
+                                                    <div className="space-y-2">
+                                                        {vehicles.filter(v =>
+                                                            v.status === 'Available' &&
+                                                            activeTrips.every(t => t.truckPlate !== v.plate)
+                                                        ).map(v => (
+                                                            <div
+                                                                key={v.id}
+                                                                onClick={() => { setSelectedVehicle(v); setSelectedDriver(v.driverName || ''); }}
+                                                                className={`p-3 border rounded-xl cursor-pointer transition-all flex items-center justify-between group
+                                                            ${selectedVehicle?.id === v.id ? 'border-green-500 bg-green-50 ring-1 ring-green-500' : 'border-gray-200 hover:border-green-300 hover:bg-green-50/50'}
+                                                        `}
+                                                            >
+                                                                <div className="flex items-center gap-3">
+                                                                    <div className="p-2 bg-white rounded-lg border border-gray-100"><Truck size={16} className="text-green-600" /></div>
+                                                                    <div>
+                                                                        <div className="text-xs font-black uppercase text-gray-900">{v.plate}</div>
+                                                                        <div className="text-[9px] font-bold text-gray-400 uppercase">{v.model} • {v.type}</div>
+                                                                        <div className="text-[9px] font-bold text-gray-500 uppercase mt-0.5">
+                                                                            Motorista: <span className="text-gray-700">{v.driverName || 'Não informado'}</span>
+                                                                        </div>
+                                                                    </div>
+                                                                </div>
+                                                                {selectedVehicle?.id === v.id && <div className="w-2 h-2 rounded-full bg-green-500"></div>}
+                                                            </div>
+                                                        ))}
+                                                        {vehicles.filter(v => v.status === 'Available').length === 0 && (
+                                                            <div className="text-[10px] text-gray-400 italic pl-2">Nenhum veículo disponível compatível.</div>
+                                                        )}
+                                                    </div>
+                                                </div>
+
+                                                {/* En Route (Compatible) */}
+                                                <div>
+                                                    <div className="flex items-center gap-2 mb-2 text-yellow-600">
+                                                        <Clock size={12} />
+                                                        <span className="text-[10px] font-black uppercase tracking-widest">Em Rota (Compatíveis)</span>
+                                                    </div>
+                                                    <div className="space-y-2">
+                                                        {vehicles.filter(v =>
+                                                            (v.status === 'In Use' || activeTrips.some(t => t.truckPlate === v.plate))
+                                                        ).map(v => (
+                                                            <div key={v.id} className="p-3 border border-yellow-200 bg-yellow-50/30 rounded-xl flex items-center justify-between opacity-80">
+                                                                <div className="flex items-center gap-3">
+                                                                    <div className="p-2 bg-white rounded-lg border border-gray-100"><Truck size={16} className="text-yellow-600" /></div>
+                                                                    <div>
+                                                                        <div className="text-xs font-black uppercase text-gray-900">{v.plate}</div>
+                                                                        <div className="text-[9px] font-bold text-yellow-600 uppercase flex items-center gap-1">
+                                                                            Em Operação <span className="text-gray-400">• {v.model}</span>
+                                                                        </div>
+                                                                        <div className="text-[9px] font-bold text-gray-500 uppercase mt-0.5">
+                                                                            Motorista: <span className="text-gray-700">{v.driverName || 'Não informado'}</span>
+                                                                        </div>
+                                                                    </div>
+                                                                </div>
+                                                                <span className="text-[9px] font-bold text-yellow-700 bg-yellow-100 px-2 py-0.5 rounded">Ocupado</span>
+                                                            </div>
+                                                        ))}
+                                                        {vehicles.filter(v => v.status === 'In Use').length === 0 && (
+                                                            <div className="text-[10px] text-gray-400 italic pl-2">Nenhum veículo em rota compatível.</div>
+                                                        )}
+                                                    </div>
+                                                </div>
+
+                                                {/* Sem bloqueio por carroceria neste protótipo (compatibilidade será regra do backend oficial) */}
+
+                                            </div>
+                                        </div>
+
+                                        <div className="space-y-6">
+                                            <div>
+                                                <label className="block text-[10px] font-black text-gray-400 mb-2 uppercase tracking-widest">Motorista Principal</label>
+                                                <input
+                                                    type="text"
+                                                    className="w-full border-2 border-gray-100 bg-gray-50 rounded-2xl p-4 text-sm outline-none focus:border-black focus:bg-white transition-all font-black uppercase"
+                                                    value={selectedDriver}
+                                                    onChange={e => setSelectedDriver(e.target.value)}
+                                                    placeholder="Nome do Motorista"
+                                                />
+                                            </div>
+
+                                            {/* Future: Add Trailers selection here */}
+                                            {selectedVehicle && (
+                                                <div className="bg-yellow-50 p-6 rounded-3xl border border-yellow-100">
+                                                    <h5 className="font-black text-yellow-800 uppercase tracking-widest text-xs mb-2 flex items-center gap-2"><AlertCircle size={14} /> Atenção</h5>
+                                                    <p className="text-[10px] text-yellow-700 leading-relaxed font-medium">
+                                                        Ao confirmar, uma nova viagem será criada com <b>{selectedLoads.length} pernas de carga</b> sequenciais baseadas na seleção.
+                                                    </p>
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Wizard Footer */}
+                        <div className="p-8 border-t border-gray-100 bg-gray-50 shrink-0 flex justify-between items-center">
+                            {wizardStep > 1 ? (
+                                <button onClick={() => setWizardStep(prev => prev - 1)} className="text-xs font-black text-gray-400 uppercase tracking-widest hover:text-gray-900">Voltar</button>
+                            ) : (
+                                <span />
+                            )}
+
+                            {wizardStep === 1 ? (
+                                <button
+                                    disabled={selectedLoads.length === 0}
+                                    onClick={() => setWizardStep(2)}
+                                    className="bg-black text-white px-10 py-4 rounded-[20px] text-xs font-black uppercase tracking-widest hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed shadow-xl transition-all"
+                                >
+                                    Próximo: Veículo
+                                </button>
+                            ) : (
+                                <button
+                                    disabled={!selectedVehicle}
+                                    onClick={handleWizardSubmit}
+                                    className="bg-blue-600 text-white px-12 py-4 rounded-[20px] text-xs font-black uppercase tracking-widest hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed shadow-xl shadow-blue-200 transition-all"
+                                >
+                                    Confirmar Viagem
+                                </button>
+                            )}
+                        </div>
+
+                    </div>
+                </div>
+            )}
+            {/* -------------------- */}
+
+            {/* --- POD MODAL --- */}
+            {podTrip && (
+                <div className="absolute inset-0 z-[80] bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
+                    <div className="bg-white rounded-3xl shadow-2xl w-full max-w-lg overflow-hidden animate-in zoom-in-95 duration-200">
+                        <div className="p-6 border-b border-gray-100 flex justify-between items-center bg-gray-50/50">
+                            <div>
+                                <h3 className="font-black text-xl text-gray-900 tracking-tighter uppercase">Finalizar Entrega</h3>
+                                <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest mt-1">Anexar comprovante para encerrar viagem</p>
+                            </div>
+                            <button onClick={() => { setPodTrip(null); setPodFile(null); }} className="p-2 hover:bg-gray-200 rounded-full transition-colors"><X size={24} /></button>
+                        </div>
+
+                        <div className="p-8 space-y-8">
+                            <div className="bg-gray-50 p-4 rounded-2xl border border-gray-100">
+                                <div className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Total Rota</div>
+                                <div className="text-sm font-bold text-gray-900">
+                                    {podTrip.originCity} ➔ {podTrip.mainDestination}
+                                </div>
+                                <div className="mt-2 inline-flex items-center gap-1 px-2 py-1 bg-blue-100 text-blue-700 rounded text-[10px] font-bold uppercase">
+                                    <MapPin size={10} /> Em Rota de Entrega
+                                </div>
+                            </div>
+
+                            <div>
+                                <label className="block text-[10px] font-black text-gray-400 mb-3 uppercase tracking-widest">Comprovante de Entrega (Obrigatório)</label>
+
+                                {!podFile ? (
+                                    <div
+                                        onClick={() => setPodFile('Comprovante-Assinado.jpg')}
+                                        className="border-2 border-dashed border-gray-200 rounded-2xl p-8 flex flex-col items-center justify-center cursor-pointer hover:bg-gray-50 hover:border-gray-300 transition-all group"
+                                    >
+                                        <div className="w-12 h-12 bg-gray-100 rounded-full flex items-center justify-center mb-3 group-hover:scale-110 transition-transform">
+                                            <FileText size={24} className="text-gray-400 group-hover:text-gray-600" />
+                                        </div>
+                                        <p className="text-xs font-bold text-gray-600">Clique para anexar arquivo</p>
+                                        <p className="text-[10px] text-gray-400 mt-1">JPG, PNG ou PDF</p>
+                                    </div>
+                                ) : (
+                                    <div className="border-2 border-green-100 bg-green-50/30 rounded-2xl p-4 flex items-center gap-4 relative overflow-hidden">
+                                        <div className="w-10 h-10 bg-green-100 rounded-full flex items-center justify-center text-green-600 shrink-0">
+                                            <CheckCircle size={20} />
+                                        </div>
+                                        <div>
+                                            <div className="text-xs font-black text-green-700 uppercase">Documento Aceito</div>
+                                            <div className="text-[10px] text-green-600 font-medium">Canhoto de Nota Fiscal assinado</div>
+                                            <div className="text-[9px] text-green-500 font-mono mt-0.5">NF-490123 • Série 1</div>
+                                        </div>
+                                        <button onClick={() => setPodFile(null)} className="absolute top-2 right-2 text-[10px] font-bold text-green-700 hover:underline">Trocar imagem</button>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+
+                        <div className="p-6 border-t border-gray-100 bg-gray-50 flex justify-end gap-3">
+                            <button onClick={() => { setPodTrip(null); setPodFile(null); }} className="px-6 py-3 text-[10px] font-black text-gray-400 hover:text-gray-600 uppercase tracking-widest">Cancelar</button>
+                            <button
+                                disabled={!podFile}
+                                onClick={() => {
+                                    if (podTrip) onUpdateStatus(podTrip.id, 'Completed', podFile || undefined);
+                                    setPodTrip(null);
+                                    setPodFile(null);
+                                }}
+                                className="bg-black text-white px-8 py-3 rounded-xl text-xs font-black shadow-xl hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed transition-all uppercase tracking-widest flex items-center gap-2"
+                            >
+                                <CheckCircle size={16} /> Concluir Viagem
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* --- DETAILS MODAL --- */}
+            {detailsData && (
+                <div className="absolute inset-0 z-[60] bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
+                    <div className="bg-white rounded-3xl shadow-2xl w-full max-w-5xl overflow-hidden flex flex-col max-h-[90vh] animate-in zoom-in-95 duration-300 border border-white/10 relative">
+
+                        {(detailsData.id && detailsData.truckPlate) ? (
+                            // USE THE NEW COMPONENT FOR TRIP DETAILS
+                            <div className="h-full overflow-y-auto custom-scrollbar bg-gray-50">
+                                <TripDetails
+                                    trip={detailsData}
+                                    loads={loads}
+                                    availableDocs={availableDocs}
+                                    isInline={true}
+                                    onBack={() => setDetailsData(null)}
+                                    onAddLeg={onAddLeg}
+                                    onAddDelivery={onAddDelivery}
+                                    onAddDocument={onAddDocument}
+                                    onAddLoadWithDeliveries={onAddLoadWithDeliveries}
+                                    onAttachLoadsToTrip={onAttachLoadsToTrip}
+                                    onUpdateStatus={onUpdateStatus}
+                                    onUpdateDeliveryStatus={onUpdateDeliveryStatus}
+                                    onReorderDeliveries={onReorderDeliveries}
+                                />
+                                <button
+                                    onClick={() => setDetailsData(null)}
+                                    className="absolute top-4 right-4 p-2 bg-white/50 hover:bg-white rounded-full text-gray-400 hover:text-gray-900 transition-all z-50 backdrop-blur-sm"
+                                >
+                                    <X size={24} />
+                                </button>
+                            </div>
+                        ) : (
+                            // FALLBACK FOR LOAD DETAILS (Or other types if any)
+                            <>
+                                <div className="p-8 border-b border-gray-100 flex justify-between items-center bg-gray-50 shrink-0">
+                                    <div>
+                                        <h3 className="font-black text-3xl tracking-tighter text-gray-900 uppercase">Detalhes da Carga</h3>
+                                        <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest mt-1">Informações do Pedido</p>
+                                    </div>
+                                    <button onClick={() => setDetailsData(null)} className="p-3 hover:bg-gray-200 rounded-full transition-colors"><X size={32} /></button>
+                                </div>
+                                <div className="p-10 overflow-y-auto bg-white custom-scrollbar space-y-12">
+                                    <div className="grid grid-cols-2 gap-10">
+                                        <BigItem label="Cliente Principal" value={detailsData.clientName} />
+                                        <BigItem label="Data para Coleta" value={detailsData.collectionDate} />
+                                        <BigItem label="Cidade Origem" value={detailsData.originCity} />
+                                        <BigItem label="Cidade Destino" value={detailsData.destinationCity} />
+                                    </div>
+                                </div>
+                                <div className="p-8 border-t border-gray-100 bg-gray-50 shrink-0 text-right">
+                                    <button onClick={() => setDetailsData(null)} className="bg-black text-white px-12 py-5 rounded-[22px] text-xs font-black uppercase tracking-widest hover:bg-gray-800 transition-all shadow-2xl active:scale-95">Fechar</button>
+                                </div>
+                            </>
+                        )}
+
+                    </div>
+                </div>
+            )}
+
+        </div>
+    );
+};
+
+// --- Sub-components ---
+
+const BigItem: React.FC<{ label: string; value: string | number }> = ({ label, value }) => (
+    <div className="flex flex-col gap-2">
+        <p className="text-[10px] uppercase font-black text-gray-400 tracking-widest leading-none">{label}</p>
+        <p className="text-xl font-black text-gray-900 tracking-tighter uppercase leading-none" title={String(value)}>{value}</p>
+    </div>
+);
+
+
+
+interface TripColumnProps {
+    title: string;
+    trips: Trip[];
+    headerColor: string;
+    accentColor: string;
+    statusColor: string;
+    statusLabel: string;
+    showProgress?: boolean;
+    isCompleted?: boolean;
+    onViewDetails: (t: string, d: any) => void;
+    actionButton?: (trip: Trip) => React.ReactNode;
+    tooltip?: string;
+}
+
+const TripColumn: React.FC<TripColumnProps> = ({ title, trips, headerColor, accentColor, statusColor, statusLabel, showProgress, isCompleted, onViewDetails, actionButton, tooltip }) => (
+    <Column title={title} count={trips.length} headerColor={headerColor} accentColor={accentColor} tooltip={tooltip}>
+        <div className="space-y-5">
+            {trips.length === 0 && <EmptyState text={`Sem ${statusLabel.toLowerCase()}`} />}
+            {trips.map(trip => (
+                <TripCard key={trip.id} trip={trip} statusColor={statusColor} statusLabel={statusLabel} showProgress={showProgress} isCompleted={isCompleted} onViewDetails={onViewDetails} actionButton={actionButton} accentColor={accentColor} />
+            ))}
+        </div>
+    </Column>
+);
+
+
+
+interface TripCardProps {
+    trip: Trip;
+    statusColor: string;
+    statusLabel: string;
+    showProgress?: boolean;
+    isCompleted?: boolean;
+    onViewDetails: (t: string, d: any) => void;
+    actionButton?: (trip: Trip) => React.ReactNode;
+    accentColor: string;
+}
+
+const TripCard: React.FC<TripCardProps> = ({ trip, statusColor, statusLabel, showProgress, isCompleted, onViewDetails, actionButton, accentColor }) => {
+    const lastLeg = trip.legs.length > 0 ? trip.legs[trip.legs.length - 1] : null;
+    const finalDest = lastLeg ? (lastLeg.type === 'EMPTY' ? lastLeg.destinationCity : (lastLeg.deliveries[lastLeg.deliveries.length - 1]?.destinationCity || '...')) : '...';
+
+    const ctrlNum = trip.legs[0]?.deliveries[0]?.documents[0]?.number || 'N/A';
+
+    return (
+        <Card
+            accentColor={accentColor}
+            className={`${isCompleted ? 'opacity-60 grayscale scale-95' : ''}`}
+        >
+            <div className="flex justify-between items-start mb-5">
+                <div className="space-y-1">
+                    <div className="text-[8px] text-gray-400 font-black uppercase tracking-widest leading-none">ID VIAGEM #{trip.id}</div>
+                    <div className="font-black text-gray-900 text-sm uppercase tracking-tighter leading-none">{trip.driverName}</div>
+                    <div className="font-black text-gray-400 text-[10px] font-mono tracking-tighter mt-1 bg-gray-50 px-2 rounded inline-block border border-gray-100">{trip.truckPlate}</div>
+                </div>
+                <div className="flex flex-col items-end gap-3">
+                    <span className={`text-[8px] font-black uppercase px-3 py-1 rounded-full border tracking-widest ${statusColor}`}>
+                        {statusLabel}
+                    </span>
+                    <button onClick={() => onViewDetails(`Ficha Técnica`, trip)} className="p-2.5 bg-gray-50 rounded-xl hover:bg-black hover:text-white transition-all border border-gray-100 group shadow-sm">
+                        <Eye size={18} className="group-hover:scale-110 transition-transform" />
+                    </button>
+                </div>
+            </div>
+
+
+
+            <div className="space-y-4 mb-6">
+                <div className="flex items-start gap-4">
+                    <div className="w-2 h-2 rounded-full bg-gray-200 mt-1.5 shadow-inner"></div>
+                    <div className="flex-1">
+                        <div className="text-[8px] text-gray-400 font-black uppercase tracking-widest leading-none mb-1">Origem</div>
+                        <div className="font-black text-gray-800 text-xs uppercase tracking-tighter leading-tight tabular-nums">{trip.originCity}</div>
+                    </div>
+                </div>
+                <div className="flex items-start gap-4">
+                    <div className={`w-2 h-2 rounded-full mt-1.5 shadow-lg ring-4
+                        ${accentColor === 'blue' ? 'bg-blue-500 ring-blue-50' :
+                            accentColor === 'yellow' ? 'bg-yellow-400 ring-yellow-50' :
+                                accentColor === 'orange' ? 'bg-orange-500 ring-orange-50' :
+                                    accentColor === 'emerald' ? 'bg-emerald-500 ring-emerald-50' : 'bg-gray-400 ring-gray-100'}`}></div>
+                    <div className="flex-1">
+                        <div className="text-[8px] text-gray-400 font-black uppercase tracking-widest leading-none mb-1">Destino</div>
+                        <div className="font-black text-gray-800 text-xs uppercase tracking-tighter leading-tight tabular-nums">{finalDest}</div>
+                    </div>
+                </div>
+            </div>
+
+            {showProgress && (
+                <div className="w-full bg-gray-100 rounded-full h-2.5 mb-5 overflow-hidden shadow-inner ring-1 ring-black/5">
+                    <div className="bg-black h-full w-[65%] rounded-full shadow-lg relative">
+                        <div className="absolute inset-0 bg-white/20 animate-pulse"></div>
+                    </div>
+                </div>
+            )}
+
+            <div className="pt-5 border-t border-gray-50 flex justify-end gap-3 mt-2">
+                {actionButton && actionButton(trip)}
+            </div>
+        </Card>
+    )
+}
+
+
