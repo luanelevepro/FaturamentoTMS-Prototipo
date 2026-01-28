@@ -62,6 +62,18 @@ O Vite faz proxy de `/api/*` para `http://localhost:3001` (configurado em `vite.
 - O backend está **somente leitura** por enquanto (sem POST/PUT/DELETE).
 - Se o backend não estiver rodando, o front faz **fallback automático** para os mocks em `mocks.ts`.
 
-## Integração no projeto oficial
+## Documentação e Organização
 
-Veja `INTEGRATION_GUIDE.md`.
+A documentação detalhada do projeto foi movida para a pasta `docs/` para manter a raiz limpa.
+
+### Documentos Principais:
+- [Fluxo Operacional](docs/FLUXO_OPERACIONAL.md)
+- [Arquitetura](docs/ARCHITECTURE.md)
+- [Regras de Negócio](docs/REGRAS_NEGOCIO.md)
+- [Guia de Integração](docs/INTEGRATION_GUIDE.md)
+
+### Status Atual
+Para entender a fase atual do desenvolvimento e as próximas tarefas, consulte o [Resumo da Fase Atual](docs/PHASE_SUMMARY.md).
+
+## Rodar local (UI + API opcional)
+...

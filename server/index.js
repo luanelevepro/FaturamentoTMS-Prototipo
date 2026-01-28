@@ -4,7 +4,7 @@ import { openDb as createDb } from './lib/db.js';
 import { buildBootstrapPayload } from './lib/bootstrap.js';
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3001;
-const DB_PATH = process.env.DB_PATH || 'data/app.sqlite';
+const DB_PATH = process.env.DB_PATH || 'src/data/app.sqlite';
 
 const app = express();
 app.use(cors());
