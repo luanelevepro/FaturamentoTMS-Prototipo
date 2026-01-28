@@ -1,0 +1,141 @@
+@import 'tailwindcss';
+@plugin 'tailwindcss-animate';
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+	--color-background: var(--background);
+	--color-foreground: var(--foreground);
+	--font-sans: var(--font-geist-sans);
+	--font-mono: var(--font-geist-mono);
+	--color-sidebar-ring: var(--sidebar-ring);
+	--color-sidebar-border: var(--sidebar-border);
+	--color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+	--color-sidebar-accent: var(--sidebar-accent);
+	--color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+	--color-sidebar-primary: var(--sidebar-primary);
+	--color-sidebar-foreground: var(--sidebar-foreground);
+	--color-sidebar: var(--sidebar);
+	--color-chart-5: var(--chart-5);
+	--color-chart-4: var(--chart-4);
+	--color-chart-3: var(--chart-3);
+	--color-chart-2: var(--chart-2);
+	--color-chart-1: var(--chart-1);
+	--color-ring: var(--ring);
+	--color-input: var(--input);
+	--color-border: var(--border);
+	--color-destructive: var(--destructive);
+	--color-accent-foreground: var(--accent-foreground);
+	--color-accent: var(--accent);
+	--color-muted-foreground: var(--muted-foreground);
+	--color-muted: var(--muted);
+	--color-secondary-foreground: var(--secondary-foreground);
+	--color-secondary: var(--secondary);
+	--color-primary-foreground: var(--primary-foreground);
+	--color-primary: var(--primary);
+	--color-popover-foreground: var(--popover-foreground);
+	--color-popover: var(--popover);
+	--color-card-foreground: var(--card-foreground);
+	--color-card: var(--card);
+	--radius-sm: calc(var(--radius) - 4px);
+	--radius-md: calc(var(--radius) - 2px);
+	--radius-lg: var(--radius);
+	--radius-xl: calc(var(--radius) + 4px);
+
+	--color-chart-grid: var(--chart-grid);
+	--color-chart-6: var(--chart-6);
+	--color-chart-7: var(--chart-7);
+	--color-chart-8: var(--chart-8);
+	--color-chart-9: var(--chart-9);
+	--color-chart-10: var(--chart-10);
+	--color-chart-11: var(--chart-11);
+
+	--color-gray: var(--color-gray);
+	--color-gray-opacity: var(--color-gray-opacity);
+	--color-green: var(--color-green);
+	--color-green-opacity: var(--color-green-opacity);
+	--color-orange: var(--color-orange);
+	--color-orange-opacity: var(--color-orange-opacity);
+	--color-red: var(--color-red);
+	--color-red-opacity: var(--color-red-opacity);
+	--color-blue: var(--color-blue);
+	--color-blue-opacity: var(--color-blue-opacity);
+	--color-purple: var(--color-purple);
+	--color-purple-opacity: var(--color-purple-opacity);
+	--color-pink: var(--color-pink);
+	--color-pink-opacity: var(--color-pink-opacity);
+}
+
+@layer base {
+	* {
+		@apply border-border outline-ring/50;
+	}
+	body {
+		@apply bg-background text-foreground;
+	}
+
+	button:not([disabled]),
+	[role='button']:not([disabled]) {
+		cursor: pointer;
+	}
+}
+
+::-webkit-scrollbar {
+	@apply h-1 w-1;
+}
+
+::-webkit-scrollbar-track {
+	@apply bg-muted;
+}
+
+::-webkit-scrollbar-thumb {
+	@apply bg-muted-foreground/60;
+}
+
+#nprogress {
+	@apply fixed z-50;
+}
+
+#nprogress .bar {
+	@apply bg-primary! h-[2px]!;
+}
+
+#nprogress .peg {
+	@apply shadow-primary! shadow-md!;
+}
+
+.rdp-vhidden {
+	@apply hidden;
+}
+
+/* Document Viewer Styles */
+.document-viewer-resize-handle {
+	position: relative;
+}
+
+.document-viewer-resize-handle:hover::after,
+.document-viewer-resize-handle.resizing::after {
+	content: '';
+	position: absolute;
+	top: 50%;
+	left: 50%;
+	transform: translate(-50%, -50%);
+	width: 4px;
+	height: 40px;
+	background-color: hsl(var(--accent));
+	border-radius: 2px;
+	opacity: 0.7;
+}
+
+/* Smooth transitions */
+.document-viewer-content {
+	transition: width 300ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Prevent text selection during resize */
+.no-select {
+	-webkit-user-select: none;
+	-moz-user-select: none;
+	-ms-user-select: none;
+	user-select: none;
+}

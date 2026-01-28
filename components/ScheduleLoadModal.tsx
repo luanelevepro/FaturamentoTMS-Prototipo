@@ -1,14 +1,17 @@
-import React, { useState } from 'react';
-import { Load, Vehicle } from '@/types';
+import React, { useState, useMemo } from 'react';
+import { Load, Vehicle, Trip } from '@/types';
 import { X, Calendar, Truck, Clock, CheckCircle, AlertTriangle } from 'lucide-react';
+import { filterCompatibleVehicles, getSegmentByIdOrName } from '@/config/segmentos';
+import { validateAddLoadToTrip, validateSegmentCompatibility } from '@/lib/validations';
 
 interface ScheduleLoadModalProps {
     isOpen: boolean;
     onClose: () => void;
     load: Load | null;
     vehicles: Vehicle[];
-    activeTrips: any[];
+    activeTrips: Trip[];
     onConfirm: (load: Load, vehicle: Vehicle, date: string) => void;
+    existingTrip?: Trip | null; // Se estiver adicionando carga a viagem existente
 }
 
 export const ScheduleLoadModal: React.FC<ScheduleLoadModalProps> = ({
@@ -17,29 +20,76 @@ export const ScheduleLoadModal: React.FC<ScheduleLoadModalProps> = ({
     load,
     vehicles,
     activeTrips,
-    onConfirm
+    onConfirm,
+    existingTrip = null
 }) => {
     const [selectedDate, setSelectedDate] = useState('');
+    const [validationError, setValidationError] = useState<string | null>(null);
 
     if (!isOpen || !load) return null;
 
+    // Filtro por segmento: Match de Segmentos (A Trava de Segurança)
+    const compatibleVehicles = useMemo(() => {
+        return filterCompatibleVehicles(vehicles, load.segment);
+    }, [vehicles, load.segment]);
+
     // Categorize Vehicles
-    const recommended = vehicles.filter(v =>
+    const recommended = compatibleVehicles.filter(v =>
         v.status === 'Available' &&
         !activeTrips.some(t => t.truckPlate === v.plate)
     );
 
-    const enRoute = vehicles.filter(v =>
-        v.status === 'In Use' || activeTrips.some(t => t.truckPlate === v.plate)
+    // Veículos em rota que são compatíveis (para adicionar carga de retorno)
+    const enRoute = compatibleVehicles.filter(v =>
+        (v.status === 'In Use' || activeTrips.some(t => t.truckPlate === v.plate)) &&
+        activeTrips.some(t => t.truckPlate === v.plate && t.status === 'In Transit')
     );
 
-    // Incompatible would be those that don't match requirements, but for now we list others or mock
+    // Veículos incompatíveis (para mostrar aviso)
     const incompatible = vehicles.filter(v =>
-        false // Placeholder for logic: v.type !== load.vehicleTypeReq
+        v.status === 'Available' &&
+        !activeTrips.some(t => t.truckPlate === v.plate) &&
+        !compatibleVehicles.some(cv => cv.id === v.id)
     );
 
     const handleSelect = (vehicle: Vehicle) => {
-        if (vehicle.status !== 'Available') return; // Prevent selection of enNodes for now or handle appropriately
+        // Permite seleção de veículos em rota para adicionar carga de retorno
+        const isEnRoute = enRoute.some(ev => ev.id === vehicle.id);
+        if (!isEnRoute && vehicle.status !== 'Available') {
+            return; // Só permite veículos disponíveis ou em rota compatíveis
+        }
+
+        // Se está adicionando a uma viagem existente, valida completamente
+        if (existingTrip) {
+            const trip = activeTrips.find(t => t.truckPlate === vehicle.plate) || existingTrip;
+            const loadType = isEnRoute ? 'RETORNO' : 'COMPLEMENTO';
+            
+            const validation = validateAddLoadToTrip(trip, load, vehicle, loadType);
+            
+            if (!validation.valid) {
+                setValidationError(validation.errors.join('\n'));
+                return;
+            }
+            
+            // Se há warnings, mostra confirmação
+            if (validation.warnings.length > 0) {
+                const confirmed = window.confirm(
+                    validation.warnings.join('\n\n') + '\n\nDeseja continuar mesmo assim?'
+                );
+                if (!confirmed) {
+                    return;
+                }
+            }
+        } else {
+            // Validação básica de compatibilidade de segmento
+            const segmentValidation = validateSegmentCompatibility(vehicle, load);
+            if (!segmentValidation.valid) {
+                setValidationError(segmentValidation.error || 'Veículo incompatível com a carga.');
+                return;
+            }
+        }
+
+        setValidationError(null);
         onConfirm(load, vehicle, selectedDate || new Date().toISOString());
         onClose();
     };
@@ -65,11 +115,18 @@ export const ScheduleLoadModal: React.FC<ScheduleLoadModalProps> = ({
                             {load.originCity} <span className="text-blue-300 mx-1">➔</span> {load.destinationCity || '...'}
                         </div>
                     </div>
-                    {load.vehicleTypeReq && (
-                        <div className="bg-blue-600 text-white text-[9px] font-bold px-2 py-1 rounded uppercase tracking-wider">
-                            EXIGE: {load.vehicleTypeReq}
-                        </div>
-                    )}
+                    <div className="flex items-center gap-2">
+                        {load.segment && (
+                            <div className="bg-blue-600 text-white text-xs font-bold px-3 py-1.5 rounded-lg uppercase tracking-wide">
+                                Segmento: {load.segment}
+                            </div>
+                        )}
+                        {load.vehicleTypeReq && (
+                            <div className="bg-gray-700 text-white text-xs font-bold px-3 py-1.5 rounded-lg uppercase tracking-wide">
+                                Exige: {load.vehicleTypeReq}
+                            </div>
+                        )}
+                    </div>
                 </div>
 
                 <div className="flex-1 overflow-y-auto p-8 custom-scrollbar space-y-8 bg-white">
@@ -90,11 +147,44 @@ export const ScheduleLoadModal: React.FC<ScheduleLoadModalProps> = ({
                     {/* Vehicle Lists */}
                     <div className="space-y-6">
 
+                        {/* Validation Error */}
+                        {validationError && (
+                            <div className="bg-red-50 border-2 border-red-300 rounded-xl p-4 mb-4">
+                                <div className="flex items-center gap-2 mb-2 text-red-700">
+                                    <AlertTriangle size={18} />
+                                    <span className="text-xs font-bold uppercase">Bloqueio de Segurança</span>
+                                </div>
+                                <p className="text-xs text-red-700 whitespace-pre-line font-semibold">
+                                    {validationError}
+                                </p>
+                            </div>
+                        )}
+
+                        {/* Incompatible Warning */}
+                        {incompatible.length > 0 && (
+                            <div className="bg-red-50 border border-red-200 rounded-xl p-4 mb-4">
+                                <div className="flex items-center gap-2 mb-2 text-red-700">
+                                    <AlertTriangle size={16} />
+                                    <span className="text-xs font-bold uppercase">Veículos Incompatíveis Ocultos</span>
+                                </div>
+                                <p className="text-xs text-red-600">
+                                    {incompatible.length} veículo(s) foram ocultos por incompatibilidade com o segmento "{load.segment || 'não definido'}".
+                                    {load.segment && getSegmentByIdOrName(load.segment) && (
+                                        <span className="block mt-1 text-[10px] text-red-500">
+                                            Segmento "{load.segment}" requer: {getSegmentByIdOrName(load.segment)?.compatibleBodyTypes.join(', ') || 'tipos específicos'}
+                                        </span>
+                                    )}
+                                </p>
+                            </div>
+                        )}
+
                         {/* Recommended */}
                         <div>
                             <div className="flex items-center gap-2 mb-3 text-green-600">
                                 <CheckCircle size={14} />
-                                <span className="text-xs font-bold uppercase tracking-wide">Recomendados (Disponíveis)</span>
+                                <span className="text-xs font-bold uppercase tracking-wide">
+                                    Compatíveis e Disponíveis ({recommended.length})
+                                </span>
                             </div>
                             <div className="space-y-2">
                                 {recommended.map(v => (
@@ -121,24 +211,39 @@ export const ScheduleLoadModal: React.FC<ScheduleLoadModalProps> = ({
                                         </div>
                                     </div>
                                 ))}
-                                {recommended.length === 0 && <div className="text-xs text-gray-400 italic text-center py-4">Nenhum veículo disponível no momento.</div>}
+                                {recommended.length === 0 && (
+                                    <div className="text-xs text-gray-400 italic text-center py-4">
+                                        {compatibleVehicles.length === 0 
+                                            ? `Nenhum veículo compatível com o segmento "${load.segment || 'não definido'}" disponível.`
+                                            : 'Nenhum veículo disponível no momento.'}
+                                    </div>
+                                )}
                             </div>
                         </div>
 
-                        {/* En Route */}
+                        {/* En Route - Para adicionar carga de retorno */}
                         {enRoute.length > 0 && (
                             <div>
                                 <div className="flex items-center gap-2 mb-3 text-yellow-600">
                                     <Clock size={14} />
-                                    <span className="text-xs font-bold uppercase tracking-wide">Em Rota (Compatíveis)</span>
+                                    <span className="text-xs font-bold uppercase tracking-wide">
+                                        Em Rota - Adicionar Retorno ({enRoute.length})
+                                    </span>
                                 </div>
+                                <p className="text-[10px] text-gray-500 mb-2 italic">
+                                    Você pode adicionar esta carga como retorno para veículos já em movimento.
+                                </p>
                                 <div className="space-y-2">
                                     {enRoute.map(v => {
                                         const trip = activeTrips.find(t => t.truckPlate === v.plate);
                                         const returnDate = trip?.estimatedReturnDate ? new Date(trip.estimatedReturnDate).toLocaleDateString('pt-BR') : 'Data não prevista';
 
                                         return (
-                                            <div key={v.id} className="p-3 border border-yellow-200 bg-yellow-50 rounded-xl flex items-center justify-between">
+                                            <div 
+                                                key={v.id} 
+                                                onClick={() => handleSelect(v)}
+                                                className="p-3 border border-yellow-200 bg-yellow-50 rounded-xl flex items-center justify-between cursor-pointer hover:border-yellow-400 hover:bg-yellow-100 transition-all group"
+                                            >
                                                 <div className="flex items-center gap-3">
                                                     <div className="w-8 h-8 rounded-full bg-yellow-100 flex items-center justify-center text-yellow-600 font-bold text-xs border border-yellow-200">
                                                         {v.plate.slice(-1)}
@@ -152,9 +257,14 @@ export const ScheduleLoadModal: React.FC<ScheduleLoadModalProps> = ({
                                                         </div>
                                                     </div>
                                                 </div>
-                                                <div className="text-right">
-                                                    <div className="text-[9px] text-yellow-600 font-bold uppercase">Retorno Previsto</div>
-                                                    <div className="text-xs font-black text-yellow-900">{returnDate}</div>
+                                                <div className="flex items-center gap-3">
+                                                    <div className="text-right">
+                                                        <div className="text-[9px] text-yellow-600 font-bold uppercase">Retorno Previsto</div>
+                                                        <div className="text-xs font-black text-yellow-900">{returnDate}</div>
+                                                    </div>
+                                                    <div className="text-[10px] font-bold text-yellow-700 uppercase bg-yellow-200 px-3 py-1.5 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity">
+                                                        Adicionar Retorno
+                                                    </div>
                                                 </div>
                                             </div>
                                         );

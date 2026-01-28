@@ -50,7 +50,7 @@ export const BoardColumn: React.FC<BoardColumnProps> = ({
                 <span className="text-[10px] font-black bg-black text-white px-3 py-1.5 rounded-full shadow-lg tabular-nums tracking-tighter leading-none">{count}</span>
             </div>
         </div>
-        <div className="flex-1 overflow-y-auto p-5 custom-scrollbar bg-white/40">
+        <div className="flex-1 overflow-y-auto p-5 custom-scrollbar bg-white/60">
             {children}
         </div>
     </div>
@@ -88,7 +88,7 @@ export const BoardCard: React.FC<BoardCardProps> = ({
 
 export const EmptyState: React.FC<{ text?: string; message?: string }> = ({ text, message }) => (
     <div className="text-center py-16 px-8 rounded-[40px] border-4 border-dashed border-gray-100 mb-4 bg-gray-50/30">
-        <Package size={48} className="mx-auto mb-4 text-gray-200" />
-        <p className="text-[10px] text-gray-300 font-black uppercase tracking-[0.2em]">{text || message}</p>
+        <Package size={48} className="mx-auto mb-4 text-gray-300" />
+        <p className="text-[10px] text-gray-500 font-black uppercase tracking-[0.2em]">{text || message}</p>
     </div>
 );

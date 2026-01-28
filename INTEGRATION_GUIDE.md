@@ -24,6 +24,7 @@ O objetivo é manter o front **independente do backend** e com um **contrato est
     - `components/TripDetails.tsx` (Detalhes / modal inline)
     - `components/TripTimeline.tsx` (Timeline - “2ª tela”)
     - `types.ts` (tipos de domínio)
+    - (opcional) `plugin/trips/` (entrypoint único para importações no host)
 2.  **Instale Dependências**:
     *   Certifique-se de ter `lucide-react` instalado:
         ```bash
@@ -35,8 +36,7 @@ O objetivo é manter o front **independente do backend** e com um **contrato est
 A recomendação é integrar via **screens** do módulo `modules/trips`, que já padronizam o contrato de props.
 
 ```tsx
-import { TripShell, TripsAndLoadsScreen, TripTimelineScreen } from './modules/trips';
-import { Trip, Load } from './types';
+import { TripShell, TripsAndLoadsScreen, TripTimelineScreen, Trip, Load } from './plugin/trips';
 
 function MeuSistema() {
   // 1) Seus dados (vindos da API/Estado Global)
@@ -124,6 +124,13 @@ As telas esperam que o backend forneça um bootstrap com este shape (ver `module
   - `cities: string[]`
 
 Regra de ouro: **mantenha os campos em camelCase** no JSON (ex.: `createdAt`, `truckPlate`, `linkedCteNumber`).
+
+## 🗓️ Cronograma (Timeline) - importante
+
+- No protótipo, a timeline tenta carregar `GET /api/cronograma` (relativo ao host), **sem hardcode de `localhost`**.
+- No projeto oficial, o recomendado é **injetar** o cronograma via:
+  - prop `scheduleItems` (já carregado), ou
+  - prop `loadScheduleItems` (callback async).
 
 ## 🧱 Implementação no Next + Prisma (exemplo)
 

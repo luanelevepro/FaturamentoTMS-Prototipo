@@ -6,7 +6,29 @@ import {
     Filter, Bell, TrendingUp, Zap, DollarSign, Shield, FileText, ChevronRight, ChevronDown, Clock
 } from 'lucide-react';
 import { TripDetails } from './TripDetails';
+import { ErrorBoundary } from './ErrorBoundary';
 import { BoardColumn as Column, BoardCard as Card, EmptyState } from './BoardUI';
+
+const inferLegDirection = (trip: Trip, leg: { type: string; originCity?: string; destinationCity?: string; direction?: 'Ida' | 'Retorno' }): 'Ida' | 'Retorno' | undefined => {
+    if (leg.type !== 'LOAD') return undefined;
+    if (leg.direction) return leg.direction;
+
+    const o = (leg.originCity || '').trim();
+    const d = (leg.destinationCity || '').trim();
+    const tripOrigin = (trip.originCity || '').trim();
+    const tripMain = (trip.mainDestination || '').trim();
+
+    // Heurística simples para protótipo:
+    // - Saindo da origem macro → Ida
+    // - Voltando para origem macro → Retorno
+    // - Indo para o destino macro → Ida
+    // - Saindo do destino macro → Retorno
+    if (tripOrigin && o === tripOrigin) return 'Ida';
+    if (tripOrigin && d === tripOrigin) return 'Retorno';
+    if (tripMain && d === tripMain) return 'Ida';
+    if (tripMain && o === tripMain) return 'Retorno';
+    return undefined;
+};
 
 interface TripBoardV2Props {
     trips: Trip[];
@@ -19,6 +41,7 @@ interface TripBoardV2Props {
     // Handlers
     onCreateLoad: (loadData: Omit<Load, 'id' | 'status'>) => void;
     onScheduleLoad: (load: Load, vehicle: Vehicle, segment: string, customOrigin: string, controlNumber: string) => void;
+    onRequestScheduleLoad?: (load: Load) => void; // abre o modal padrão (evita modal duplicado/bugado)
     onUpdateStatus: (tripId: string, status: Trip['status'], pod?: string) => void;
     onUpdateDeliveryStatus: (tripId: string, legId: string, deliveryId: string, status: Delivery['status'], pod?: string) => void;
     // Others
@@ -31,6 +54,7 @@ interface TripBoardV2Props {
     onReorderDeliveries?: (tripId: string, legId: string, newOrder: Delivery[]) => void;
     showFilters?: boolean;
     onCloseFilters?: () => void;
+    onEmitCTe?: (loadId: string) => void; // Handler para "emitir" CT-e (apenas visual/gerencial)
 }
 
 const BODY_TYPE_OPTIONS = [
@@ -149,6 +173,7 @@ export const TripBoardV2: React.FC<TripBoardV2Props> = ({
     onCreateNew,
     onCreateLoad,
     onScheduleLoad,
+    onRequestScheduleLoad,
     onUpdateStatus,
     onUpdateDeliveryStatus,
     onAddLeg,
@@ -161,12 +186,6 @@ export const TripBoardV2: React.FC<TripBoardV2Props> = ({
     showFilters,
     onCloseFilters
 }) => {
-
-
-    const [schedulingLoad, setSchedulingLoad] = useState<Load | null>(null);
-    const [selectedSegment, setSelectedSegment] = useState(''); // agora usado como "tipo de carroceria"
-    const [customOrigin, setCustomOrigin] = useState('');
-    const [controlNumber, setControlNumber] = useState('');
 
     // Create Load Modal State
 
@@ -183,6 +202,17 @@ export const TripBoardV2: React.FC<TripBoardV2Props> = ({
     // POD Modal State
     const [podTrip, setPodTrip] = useState<Trip | null>(null);
     const [podFile, setPodFile] = useState<string | null>(null); // For mock file upload
+
+    const isTripFiscalOk = (trip: Trip): boolean => {
+        // Modelo alvo: 1 Carga (Leg LOAD) => 1 destino => 1 CT-e
+        // Consideramos "OK" quando toda Leg de carga possui ao menos 1 CT-e vinculado nos documentos.
+        const loadLegs = trip.legs.filter(l => l.type === 'LOAD');
+        if (loadLegs.length === 0) return false;
+        return loadLegs.every(l => {
+            const docs = l.deliveries.flatMap(d => d.documents || []);
+            return docs.some(d => d.type === 'CTe');
+        });
+    };
 
     const handleSaveDoc = (tripId: string, legId: string, deliveryId: string) => {
         if (!newDocForm.number) {
@@ -263,21 +293,10 @@ export const TripBoardV2: React.FC<TripBoardV2Props> = ({
 
     // --- Handlers ---
     const handleOpenSchedule = (load: Load) => {
-        setSchedulingLoad(load);
-        setSelectedSegment('');
-        setControlNumber('');
-        setCustomOrigin(load.originCity);
-    };
-
-    const handleConfirmSchedule = (vehicle: Vehicle) => {
-        if (schedulingLoad) {
-            if (!selectedSegment) {
-                alert('Por favor, selecione o tipo de carroceria para a carga.');
-                return;
-            }
-            onScheduleLoad(schedulingLoad, vehicle, selectedSegment, customOrigin, controlNumber);
-            setSchedulingLoad(null);
-        }
+        // Preferir o modal padrão do host (TripsAndLoadsScreen) para manter layout consistente
+        if (onRequestScheduleLoad) return onRequestScheduleLoad(load);
+        // Fallback: mantém comportamento antigo (caso o host não passe o callback)
+        alert('Ação de programação não configurada nesta tela.');
     };
 
 
@@ -288,7 +307,7 @@ export const TripBoardV2: React.FC<TripBoardV2Props> = ({
     };
 
     return (
-        <div className="flex flex-col h-screen overflow-hidden bg-gray-100 font-sans relative text-gray-800" >
+        <div className="flex flex-col h-full min-h-0 overflow-hidden bg-gray-100 font-sans relative text-gray-800" >
 
             {/* Header / Filters */}
             {/* Filter Panel Overlay */}
@@ -301,8 +320,8 @@ export const TripBoardV2: React.FC<TripBoardV2Props> = ({
             />
 
             {/* DMAIC / Kanban Board */}
-            < div className="flex-1 overflow-x-auto overflow-y-hidden p-6 custom-scrollbar" >
-                <div className="flex gap-4 h-full min-w-[1800px]">
+            < div className="flex-1 overflow-x-auto overflow-y-hidden p-3 sm:p-4 lg:p-6 custom-scrollbar" >
+                <div className="flex gap-3 lg:gap-4 h-full min-w-[1300px] sm:min-w-[1500px] lg:min-w-[1800px]">
 
                     {/* COL 1: Cargas Disponíveis - CINZA */}
                     <Column
@@ -317,29 +336,40 @@ export const TripBoardV2: React.FC<TripBoardV2Props> = ({
                             {sortedLoads.map(load => (
                                 <Card key={load.id} accentColor="gray">
                                     <div className="flex justify-between items-start mb-3">
-                                        <span className="text-[10px] font-black text-gray-500 bg-gray-50 px-2 py-0.5 rounded border border-gray-200 uppercase">
+                                        <span className="text-xs font-black text-gray-600 bg-gray-100 px-3 py-1 rounded-lg border border-gray-200 uppercase">
                                             Pendente
                                         </span>
-                                        {load.collectionDate && (
-                                            <span className="text-[10px] font-black text-gray-500 flex items-center gap-1 uppercase tracking-tighter">
-                                                <Calendar size={12} /> {new Date(load.collectionDate).toLocaleDateString('pt-BR')}
-                                            </span>
-                                        )}
-                                        <button onClick={() => handleViewDetails(`Carga: ${load.clientName}`, { type: 'LOAD_DETAIL', ...load })} className="text-gray-300 hover:text-gray-900 transition-colors">
-                                            <Eye size={16} />
-                                        </button>
+                                        <div className="flex items-center gap-2">
+                                            {load.collectionDate && (
+                                                <span className="text-xs font-semibold text-gray-600 flex items-center gap-1.5">
+                                                    <Calendar size={14} className="text-gray-500" /> 
+                                                    <span className="font-bold">{new Date(load.collectionDate).toLocaleDateString('pt-BR')}</span>
+                                                </span>
+                                            )}
+                                            <button 
+                                                onClick={() => handleViewDetails(`Carga: ${load.clientName}`, { type: 'LOAD_DETAIL', ...load })} 
+                                                className="text-gray-400 hover:text-gray-700 transition-colors p-1"
+                                            >
+                                                <Eye size={16} />
+                                            </button>
+                                        </div>
                                     </div>
                                     <div className="mb-4">
-                                        <div className="font-black text-gray-900 text-sm uppercase tracking-tight">{load.clientName}</div>
-                                        <div className="space-y-1.5 mt-3">
-                                            <div className="text-xs font-bold text-gray-500 flex items-center gap-2">
-                                                <MapPin size={14} className="text-gray-300" /> {load.originCity}
-                                            </div>
+                                        <div className="font-black text-gray-900 text-base uppercase tracking-tight mb-2">{load.clientName}</div>
+                                        <div className="flex items-center gap-2 text-sm text-gray-600">
+                                            <MapPin size={16} className="text-gray-500" /> 
+                                            <span className="font-semibold">{load.originCity}</span>
+                                            {load.destinationCity && (
+                                                <>
+                                                    <ChevronRight size={14} className="text-gray-400" />
+                                                    <span className="font-semibold">{load.destinationCity}</span>
+                                                </>
+                                            )}
                                         </div>
                                     </div>
                                     <button
                                         onClick={() => handleOpenSchedule(load)}
-                                        className="w-full py-2.5 bg-black hover:bg-gray-800 text-white text-[10px] font-black rounded-xl shadow-md transition-all uppercase tracking-widest"
+                                        className="w-full py-3 bg-black hover:bg-gray-800 text-white text-xs font-black rounded-xl shadow-md transition-all uppercase tracking-wide"
                                     >
                                         Programar Veículo
                                     </button>
@@ -422,14 +452,17 @@ export const TripBoardV2: React.FC<TripBoardV2Props> = ({
                         onViewDetails={handleViewDetails}
                         actionButton={(trip) => {
                             const busy = isVehicleBusy(trip.truckPlate);
+                            const fiscalOk = isTripFiscalOk(trip);
+                            const disabled = busy || !fiscalOk;
                             return (
                                 <button
-                                    disabled={busy}
+                                    disabled={disabled}
                                     onClick={() => onUpdateStatus(trip.id, 'Picking Up')}
-                                    className={`flex items-center gap-2 px-5 py-2 text-white text-[10px] font-black rounded-xl shadow-lg uppercase tracking-widest transition-all
-                                ${busy ? 'bg-gray-300 cursor-not-allowed grayscale' : 'bg-black hover:bg-gray-800'}`}
+                                    className={`flex items-center gap-2 px-6 py-2.5 text-white text-xs font-black rounded-xl shadow-lg uppercase tracking-wide transition-all
+                                ${disabled ? 'bg-gray-300 cursor-not-allowed grayscale' : 'bg-black hover:bg-gray-800'}`}
+                                    title={!fiscalOk ? 'Vínculo fiscal pendente: associe CT-e à(s) Carga(s) antes de iniciar.' : undefined}
                                 >
-                                    <Play size={14} fill="white" /> Iniciar Coleta
+                                    <Play size={16} fill="white" /> Iniciar Coleta
                                 </button>
                             )
                         }}
@@ -448,10 +481,14 @@ export const TripBoardV2: React.FC<TripBoardV2Props> = ({
                         showProgress
                         actionButton={(trip) => (
                             <button
+                                disabled={!isTripFiscalOk(trip)}
                                 onClick={() => onUpdateStatus(trip.id, 'In Transit')}
-                                className="flex items-center gap-2 px-5 py-2 bg-black hover:bg-gray-800 text-white text-[10px] font-black rounded-xl shadow-lg uppercase tracking-widest transition-all"
+                                className={`flex items-center gap-2 px-6 py-2.5 text-white text-xs font-black rounded-xl shadow-lg uppercase tracking-wide transition-all ${
+                                    !isTripFiscalOk(trip) ? 'bg-gray-300 cursor-not-allowed grayscale' : 'bg-black hover:bg-gray-800'
+                                }`}
+                                title={!isTripFiscalOk(trip) ? 'Vínculo fiscal pendente: associe CT-e à(s) Carga(s) antes de iniciar.' : undefined}
                             >
-                                <Truck size={14} /> Iniciar Viagem
+                                <Truck size={16} /> Iniciar Viagem
                             </button>
                         )}
                     />
@@ -470,9 +507,9 @@ export const TripBoardV2: React.FC<TripBoardV2Props> = ({
                         actionButton={(trip) => (
                             <button
                                 onClick={() => setPodTrip(trip)}
-                                className="flex items-center gap-2 px-5 py-2 bg-black hover:bg-gray-800 text-white text-[10px] font-black rounded-xl shadow-lg uppercase tracking-widest transition-all"
+                                className="flex items-center gap-2 px-6 py-2.5 bg-black hover:bg-gray-800 text-white text-xs font-black rounded-xl shadow-lg uppercase tracking-wide transition-all"
                             >
-                                <CheckCircle size={14} /> Finalizar
+                                <CheckCircle size={16} /> Finalizar
                             </button>
                         )}
                     />
@@ -495,78 +532,7 @@ export const TripBoardV2: React.FC<TripBoardV2Props> = ({
 
 
 
-            {/* --- SCHEDULING MODAL --- */}
-            {
-                schedulingLoad && (
-                    <div className="absolute inset-0 z-50 bg-black/70 backdrop-blur-md flex items-center justify-center p-4">
-                        <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden animate-in slide-in-from-bottom-10">
-                            <div className="p-6 border-b border-gray-100 flex justify-between items-center bg-gray-50">
-                                <div>
-                                    <h3 className="font-black text-xl text-gray-900 tracking-tighter uppercase">Programação</h3>
-                                    <p className="text-[10px] text-blue-600 font-bold uppercase tracking-widest mt-1">{schedulingLoad.clientName}</p>
-                                </div>
-                                <button onClick={() => setSchedulingLoad(null)} className="p-2 hover:bg-gray-200 rounded-full transition-colors"><X size={20} /></button>
-                            </div>
-
-                            <div className="p-7 space-y-7">
-                                <div className="bg-black p-5 rounded-3xl border-2 border-gray-800 shadow-2xl">
-                                    <label className="block text-[9px] font-black text-gray-500 mb-2 uppercase tracking-widest leading-none">Nº de Controle Operacional <span className="text-white">*</span></label>
-                                    <input
-                                        type="text" className="w-full border-2 border-gray-800 bg-gray-900 text-white rounded-2xl p-4 text-base outline-none focus:border-blue-500 transition-all font-black placeholder:text-gray-700"
-                                        value={controlNumber} onChange={(e) => setControlNumber(e.target.value)}
-                                        placeholder="Opcional (pode ficar em branco)..."
-                                        autoFocus
-                                    />
-                                </div>
-
-                                <div className="grid grid-cols-2 gap-5">
-                                    <div>
-                                        <label className="block text-[9px] font-black text-gray-400 mb-2 uppercase tracking-widest">Tipo de Carroceria <span className="text-red-500">*</span></label>
-                                        <select
-                                            className="w-full border-2 border-gray-100 bg-gray-50 rounded-2xl p-4 text-xs outline-none focus:border-black font-black transition-all bg-white"
-                                            value={selectedSegment} onChange={(e) => setSelectedSegment(e.target.value)}
-                                        >
-                                            <option value="">Escolha...</option>
-                                            {BODY_TYPE_OPTIONS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
-                                        </select>
-                                    </div>
-                                    <div>
-                                        <label className="block text-[9px] font-black text-gray-400 mb-2 uppercase tracking-widest">Cidade Origem</label>
-                                        <input
-                                            type="text" className="w-full border-2 border-gray-100 bg-gray-50 rounded-2xl p-4 text-xs outline-none focus:border-black font-black transition-all"
-                                            value={customOrigin} onChange={(e) => setCustomOrigin(e.target.value)}
-                                        />
-                                    </div>
-                                </div>
-
-                                <div className="space-y-4">
-                                    <div className="text-[9px] font-black text-gray-400 uppercase tracking-widest mb-1 px-1">Conjuntos Disponíveis</div>
-                                    {availableVehicles.map(v => (
-                                        <div
-                                            key={v.id}
-                                            onClick={() => handleConfirmSchedule(v)}
-                                            className={`p-4 border-2 rounded-2xl cursor-pointer transition-all flex justify-between items-center group
-                                  ${(!selectedSegment) ? 'opacity-40 grayscale pointer-events-none' : 'border-gray-50 bg-gray-50 hover:border-black hover:bg-white shadow-sm'}
-                              `}
-                                        >
-                                            <div className="flex items-center gap-4">
-                                                <div className="p-2 bg-white rounded-xl border border-gray-200 group-hover:border-black group-hover:bg-black group-hover:text-white transition-all">
-                                                    <Truck size={20} />
-                                                </div>
-                                                <div>
-                                                    <div className="font-black text-gray-900 text-sm font-mono">{v.plate}</div>
-                                                    <div className="text-[9px] text-gray-400 font-bold uppercase">{v.driverName}</div>
-                                                </div>
-                                            </div>
-                                            <ChevronRight size={24} className="text-gray-300 group-hover:text-black transition-all" />
-                                        </div>
-                                    ))}
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                )
-            }
+            {/* Programação: modal unificado fica no host (TripsAndLoadsScreen) */}
 
             {/* --- WIZARD MODAL --- */}
             {/* -------------------- */}
@@ -653,21 +619,23 @@ export const TripBoardV2: React.FC<TripBoardV2Props> = ({
                             {(detailsData.id && detailsData.truckPlate) ? (
                                 // USE THE NEW COMPONENT FOR TRIP DETAILS
                                 <div className="h-full overflow-y-auto custom-scrollbar bg-gray-50">
-                                    <TripDetails
-                                        trip={detailsData}
-                                        loads={loads}
-                                        availableDocs={availableDocs}
-                                        isInline={true}
-                                        onBack={() => setDetailsData(null)}
-                                        onAddLeg={onAddLeg}
-                                        onAddDelivery={onAddDelivery}
-                                        onAddDocument={onAddDocument}
-                                        onAddLoadWithDeliveries={onAddLoadWithDeliveries}
-                                        onAttachLoadsToTrip={onAttachLoadsToTrip}
-                                        onUpdateStatus={onUpdateStatus}
-                                        onUpdateDeliveryStatus={onUpdateDeliveryStatus}
-                                        onReorderDeliveries={onReorderDeliveries}
-                                    />
+                                    <ErrorBoundary title="Erro nos detalhes da viagem">
+                                        <TripDetails
+                                            trip={detailsData}
+                                            loads={loads}
+                                            availableDocs={availableDocs}
+                                            isInline={true}
+                                            onBack={() => setDetailsData(null)}
+                                            onAddLeg={onAddLeg}
+                                            onAddDelivery={onAddDelivery}
+                                            onAddDocument={onAddDocument}
+                                            onAddLoadWithDeliveries={onAddLoadWithDeliveries}
+                                            onAttachLoadsToTrip={onAttachLoadsToTrip}
+                                            onUpdateStatus={onUpdateStatus}
+                                            onUpdateDeliveryStatus={onUpdateDeliveryStatus}
+                                            onReorderDeliveries={onReorderDeliveries}
+                                        />
+                                    </ErrorBoundary>
                                     <button
                                         onClick={() => setDetailsData(null)}
                                         className="absolute top-4 right-4 p-2 bg-white/50 hover:bg-white rounded-full text-gray-400 hover:text-gray-900 transition-all z-50 backdrop-blur-sm"
@@ -764,7 +732,24 @@ const TripCard: React.FC<TripCardProps> = ({ trip, statusColor, statusLabel, sho
     // Collect all documents from all legs/deliveries
     const allDocs = trip.legs.flatMap(l => l.deliveries.flatMap(d => d.documents));
     const totalWeight = allDocs.reduce((acc, d) => acc + (d.weight || 0), 0);
-    const totalValue = allDocs.reduce((acc, d) => acc + (d.value || 0), 0);
+
+    // Gerencial: valor do frete vem do CT-e (não da NF-e)
+    const cteDocs = allDocs.filter(d => d.type === 'CTe');
+    const nfDocs = allDocs.filter(d => d.type === 'NF');
+    const totalFreight = cteDocs.reduce((acc, d) => acc + (d.value || 0), 0);
+
+    const uniqCte = new Set(cteDocs.map(d => d.number));
+    const uniqNf = new Set(nfDocs.map(d => d.dfeKey || d.number));
+
+    const cteOwn = new Set(cteDocs.filter(d => !d.isSubcontracted).map(d => d.number));
+    const dfeCount = uniqNf.size;
+    const cteOwnCount = cteOwn.size;
+
+    const cargaLegs = trip.legs.filter(l => l.type === 'LOAD');
+    const cargasCount = cargaLegs.length;
+    const paradasCount = cargaLegs.reduce((acc, l) => acc + l.deliveries.length, 0);
+    const idaCount = cargaLegs.filter(l => inferLegDirection(trip, l as any) === 'Ida').length;
+    const retornoCount = cargaLegs.filter(l => inferLegDirection(trip, l as any) === 'Retorno').length;
 
     return (
         <Card
@@ -772,88 +757,125 @@ const TripCard: React.FC<TripCardProps> = ({ trip, statusColor, statusLabel, sho
             className={`${isCompleted ? 'opacity-60 grayscale scale-95' : ''} transition-all duration-300 ring-offset-2 hover:ring-2 hover:ring-black/5`}
         >
             {/* Header: ID + Status */}
-            <div className="flex justify-between items-start mb-2">
-                <div className="flex items-center gap-2">
-                    <span className="text-[9px] font-black text-gray-400 uppercase tracking-widest">
-                        #{trip.id.replace('trip-', '').substring(0, 10)}
+            <div className="flex justify-between items-start mb-3">
+                <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-xs font-bold text-gray-500 uppercase tracking-wide font-mono">
+                        #{trip.id.replace('trip-', '').substring(0, 8)}
                     </span>
-                    {/* Badge de Status/Docs */}
-                    {allDocs.length > 0 && (
-                        <span className="text-[8px] font-black text-gray-400 bg-gray-50 px-1.5 py-0.5 rounded flex items-center gap-1 border border-gray-100" title="Documentos">
-                            <FileText size={8} /> {allDocs.length}
+                    {/* Badges Gerenciais - Melhorados */}
+                    {cargasCount > 0 && (
+                        <span className="text-[10px] font-bold text-gray-700 bg-gray-100 px-2 py-1 rounded-md flex items-center gap-1.5 border border-gray-200" title="Cargas (Legs LOAD)">
+                            <Package size={12} className="text-gray-600" /> <span className="font-black">{cargasCount}</span>
+                        </span>
+                    )}
+                    {cteOwnCount > 0 && (
+                        <span className="text-[10px] font-bold text-gray-700 bg-gray-100 px-2 py-1 rounded-md flex items-center gap-1.5 border border-gray-200" title="CT-e próprio (únicos)">
+                            <FileText size={12} className="text-gray-600" /> <span className="font-black">{cteOwnCount}</span>
+                        </span>
+                    )}
+                    {dfeCount > 0 && (
+                        <span className="text-[10px] font-bold text-gray-700 bg-gray-100 px-2 py-1 rounded-md flex items-center gap-1.5 border border-gray-200" title="DF-e/NF-e atendidos (únicos)">
+                            <FileText size={12} className="text-gray-600" /> <span className="font-black">{dfeCount}</span>
                         </span>
                     )}
                 </div>
-                <span className={`text-[9px] font-black px-2 py-0.5 rounded border uppercase tracking-wider ${statusColor}`}>
+                <span className={`text-xs font-black px-3 py-1 rounded-lg border-2 uppercase tracking-wide ${statusColor}`}>
                     {statusLabel}
                 </span>
             </div>
 
-            {/* Main Info: Driver & Plate (Replicating Client Name style from LoadCard) */}
-            <div className="mb-3">
-                <div className="flex items-center gap-2 mb-1">
-                    <div className="w-6 h-6 rounded-full bg-gray-200 flex items-center justify-center font-bold text-[10px] text-gray-500 uppercase">
+            {/* Main Info: Driver & Plate - Melhorado */}
+            <div className="mb-4">
+                <div className="flex items-center gap-3 mb-2">
+                    <div className="w-8 h-8 rounded-full bg-gray-200 flex items-center justify-center font-bold text-sm text-gray-700 uppercase shrink-0">
                         {trip.driverName.charAt(0)}
                     </div>
-                    <div className="font-black text-gray-900 text-sm uppercase tracking-tight line-clamp-1" title={trip.driverName}>
+                    <div className="font-black text-gray-900 text-base uppercase tracking-tight line-clamp-1 flex-1" title={trip.driverName}>
                         {trip.driverName}
                     </div>
                 </div>
-                <span className="text-[8px] font-bold text-gray-400 bg-gray-50 px-2 py-0.5 rounded uppercase border border-gray-100 font-mono">
-                    {trip.truckPlate}
-                </span>
+                <div className="flex items-center gap-2">
+                    <Truck size={14} className="text-gray-500" />
+                    <span className="text-xs font-bold text-gray-700 bg-gray-100 px-3 py-1 rounded-md uppercase border border-gray-200 font-mono tracking-wider">
+                        {trip.truckPlate}
+                    </span>
+                </div>
             </div>
 
-            {/* Route */}
-            <div className="space-y-1.5 mb-3">
-                <div className="flex items-center gap-2 text-xs text-gray-500">
-                    <div className="w-1.5 h-1.5 rounded-full bg-gray-300"></div>
-                    <span className="font-bold uppercase text-[10px] tracking-wide">{trip.originCity}</span>
+            {/* Route - Melhorado */}
+            <div className="space-y-2 mb-4 bg-gray-50 rounded-xl p-3 border border-gray-100">
+                <div className="flex items-center gap-2">
+                    <div className="w-2 h-2 rounded-full bg-gray-400 shrink-0"></div>
+                    <span className="font-bold text-sm text-gray-700 uppercase tracking-wide">{trip.originCity}</span>
                 </div>
-                <div className="flex items-center gap-2 text-xs text-gray-900 font-bold">
-                    <ChevronRight size={12} className="text-gray-400" />
-                    <span className="font-black uppercase text-[10px] tracking-wide">{finalDest}</span>
+                <div className="flex items-center gap-2">
+                    <ChevronRight size={16} className="text-gray-500 shrink-0" />
+                    <span className="font-black text-base text-gray-900 uppercase tracking-wide">{finalDest}</span>
                 </div>
-                {trip.legs.length > 1 && (
-                    <div className="pl-4 text-[8px] font-bold text-gray-400 uppercase">
-                        + {trip.legs.length - 1} paradas
+                {(cargasCount > 1 || paradasCount > 1 || idaCount > 0 || retornoCount > 0) && (
+                    <div className="pt-2 mt-2 border-t border-gray-200 flex flex-wrap gap-2 text-xs text-gray-600">
+                        {cargasCount > 1 && (
+                            <span className="font-semibold">{cargasCount} cargas</span>
+                        )}
+                        {paradasCount > 1 && (
+                            <span className="font-semibold">{paradasCount} paradas</span>
+                        )}
+                        {idaCount > 0 && (
+                            <span className="font-semibold text-blue-600">Ida: {idaCount}</span>
+                        )}
+                        {retornoCount > 0 && (
+                            <span className="font-semibold text-orange-600">Retorno: {retornoCount}</span>
+                        )}
                     </div>
                 )}
             </div>
 
-            {/* Stats Grid */}
-            <div className="grid grid-cols-3 gap-2 mb-3 bg-gray-50 rounded-lg p-2 border border-gray-100">
+            {/* Stats Grid - Melhorado */}
+            <div className="grid grid-cols-3 gap-3 mb-4 bg-gradient-to-br from-gray-50 to-gray-100 rounded-xl p-3 border border-gray-200">
                 <div className="text-center">
-                    <div className="text-[8px] text-gray-400 font-bold uppercase">Peso</div>
-                    <div className="text-[11px] font-black text-gray-700 flex items-center justify-center gap-0.5">
-                        <Weight size={10} />
-                        {formatWeight(totalWeight)}
+                    <div className="text-[10px] text-gray-600 font-bold uppercase mb-1.5 tracking-wide">Peso</div>
+                    <div className="text-sm font-black text-gray-900 flex items-center justify-center gap-1.5">
+                        <Weight size={14} className="text-gray-600" />
+                        <span>{formatWeight(totalWeight)}</span>
                     </div>
                 </div>
-                <div className="text-center border-x border-gray-200">
-                    <div className="text-[8px] text-gray-400 font-bold uppercase">Valor</div>
-                    <div className="text-[11px] font-black text-gray-700 flex items-center justify-center gap-0.5">
-                        <DollarSign size={10} />
-                        {new Intl.NumberFormat('pt-BR', { notation: "compact", compactDisplay: "short", style: 'currency', currency: 'BRL' }).format(totalValue)}
+                <div className="text-center border-x border-gray-300 px-3">
+                    <div className="text-[10px] text-gray-600 font-bold uppercase mb-1.5 tracking-wide">Frete</div>
+                    <div className="text-sm font-black text-gray-900 flex items-center justify-center gap-1.5">
+                        <DollarSign size={14} className="text-gray-600" />
+                        <span>{new Intl.NumberFormat('pt-BR', { notation: "compact", compactDisplay: "short", style: 'currency', currency: 'BRL' }).format(totalFreight)}</span>
                     </div>
                 </div>
                 <div className="text-center">
-                    <div className="text-[8px] text-gray-400 font-bold uppercase">Docs</div>
-                    <div className="text-[11px] font-black text-gray-700 flex items-center justify-center gap-0.5">
-                        <FileText size={10} />
-                        {allDocs.length}
+                    <div className="text-[10px] text-gray-600 font-bold uppercase mb-1.5 tracking-wide">Documentos</div>
+                    <div className="text-xs font-black text-gray-900 flex flex-col items-center gap-0.5">
+                        <div className="flex items-center gap-1">
+                            <Package size={12} className="text-gray-600" />
+                            <span>{cargasCount}</span>
+                        </div>
+                        <div className="flex items-center gap-1 text-[10px] text-gray-600">
+                            <FileText size={10} />
+                            <span>{cteOwnCount} CT-e / {dfeCount} DF-e</span>
+                        </div>
                     </div>
                 </div>
             </div>
 
-            {/* Date / Schedule */}
-            <div className="flex items-center gap-2 text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-3">
-                <Calendar size={12} />
-                {trip.scheduledDate ? new Date(trip.scheduledDate).toLocaleDateString('pt-BR') : new Date(trip.createdAt).toLocaleDateString('pt-BR')}
+            {/* Date / Schedule - Melhorado */}
+            <div className="flex items-center gap-3 text-xs font-semibold text-gray-600 mb-3">
+                <div className="flex items-center gap-2">
+                    <Calendar size={14} className="text-gray-500" />
+                    <span className="font-bold text-gray-700">
+                        {trip.scheduledDate ? new Date(trip.scheduledDate).toLocaleDateString('pt-BR') : new Date(trip.createdAt).toLocaleDateString('pt-BR')}
+                    </span>
+                </div>
                 {trip.estimatedReturnDate && (
                     <>
-                        <span className="text-gray-300">|</span>
-                        <Clock size={12} /> Previsão: {new Date(trip.estimatedReturnDate).toLocaleDateString('pt-BR')}
+                        <span className="text-gray-300">•</span>
+                        <div className="flex items-center gap-2">
+                            <Clock size={14} className="text-gray-500" />
+                            <span className="text-gray-600">Previsão: <span className="font-bold text-gray-700">{new Date(trip.estimatedReturnDate).toLocaleDateString('pt-BR')}</span></span>
+                        </div>
                     </>
                 )}
             </div>
@@ -867,10 +889,13 @@ const TripCard: React.FC<TripCardProps> = ({ trip, statusColor, statusLabel, sho
                 </div>
             )}
 
-            {/* Footer / Action Button */}
-            <div className="mt-auto pt-3 border-t border-gray-100 flex justify-between items-center gap-3">
-                <button onClick={() => onViewDetails('Detalhes da Viagem', trip)} className="text-[10px] font-bold text-gray-500 hover:text-black flex items-center gap-1">
-                    <Eye size={12} /> Ver Detalhes
+            {/* Footer / Action Button - Melhorado */}
+            <div className="mt-auto pt-4 border-t-2 border-gray-200 flex justify-between items-center gap-3">
+                <button 
+                    onClick={() => onViewDetails('Detalhes da Viagem', trip)} 
+                    className="text-xs font-bold text-gray-600 hover:text-gray-900 flex items-center gap-2 transition-colors"
+                >
+                    <Eye size={14} /> Ver Detalhes
                 </button>
                 {actionButton && actionButton(trip)}
             </div>

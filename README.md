@@ -1,23 +1,31 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# Protótipo Torre de Controle (Viagens e Cargas)
 
-# Run and deploy your AI Studio app
+Este repositório é um **host de demo** (Vite + React) para evolução rápida das telas de **Viagens/Cargas** (Torre de Controle).
+O objetivo é entregar para o projeto oficial um conjunto de telas **plug-and-play**, com contrato de dados estável e handlers.
 
-This contains everything you need to run your app locally.
+## Plug-and-play (entrada única)
 
-View your app in AI Studio: https://ai.studio/apps/drive/1xZy2ocTvPWF6B0H7ko2WTGU2hPvr9dRb
+No protótipo, o entrypoint recomendado para importações é:
 
-## Run Locally
+- `plugin/trips` (reexporta screens, shell, tipos e contrato de bootstrap)
 
-**Prerequisites:**  Node.js
+No projeto oficial, você pode copiar os arquivos indicados em `INTEGRATION_GUIDE.md` e manter o mesmo entrypoint.
 
+## Rodar local (UI + API opcional)
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+**Pré-requisitos**: Node.js
+
+1) Instalar dependências:
+
+`npm install`
+
+2) Subir backend (API) **opcional** (SQLite, leitura):
+
+`npm run dev:api`
+
+3) Subir frontend (Vite):
+
+`npm run dev:ui`
 
 ## SQLite local (para trabalhar com dados “quase reais”)
 
@@ -53,3 +61,7 @@ O Vite faz proxy de `/api/*` para `http://localhost:3001` (configurado em `vite.
 
 - O backend está **somente leitura** por enquanto (sem POST/PUT/DELETE).
 - Se o backend não estiver rodando, o front faz **fallback automático** para os mocks em `mocks.ts`.
+
+## Integração no projeto oficial
+
+Veja `INTEGRATION_GUIDE.md`.

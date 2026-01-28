@@ -1,11 +1,12 @@
-import Database from 'better-sqlite3';
+import sqlite3 from 'sqlite3';
+import { open } from 'sqlite';
 
-export function createDb(dbPath) {
-  const db = new Database(dbPath, {
-    readonly: true,
-    fileMustExist: true
+export async function openDb(dbPath) {
+  const db = await open({
+    filename: dbPath,
+    driver: sqlite3.Database
   });
 
-  db.pragma('foreign_keys = ON');
+  await db.exec('PRAGMA foreign_keys = ON');
   return db;
 }

@@ -1,8 +1,9 @@
 import React, { useState, useMemo } from 'react';
 import { Trip, Leg, Delivery, Document, AvailableDocument, Load } from '../types';
+import { tripStatusLabelPt } from '@/modules/trips/ui/statusLabels';
 import {
   ArrowLeft, MapPin, Plus, FileText,
-  Trash2, Box, Truck, Calendar, Map, MoreVertical, X, Check, ChevronDown, ChevronUp, ChevronRight, ArrowRight, Info, Search, Route, Tag, Link as LinkIcon, GripVertical, AlertCircle
+  Trash2, Box, Truck, Calendar, Map as MapIcon, MoreVertical, X, Check, ChevronDown, ChevronUp, ChevronRight, ArrowRight, Info, Search, Route, Tag, Link as LinkIcon, GripVertical, AlertCircle
 } from 'lucide-react';
 import {
   DndContext,
@@ -90,31 +91,110 @@ const SortableDeliveryItem = ({
     opacity: isDragging ? 0.8 : 1,
   };
 
-  const buildCteHierarchy = (docs: Document[]) => {
-    const cteNumbers = new Set<string>();
-    docs.forEach(d => {
-      if (d.type === 'CTe') cteNumbers.add(d.number);
-      if (d.linkedCteNumber) cteNumbers.add(d.linkedCteNumber);
-    });
+  const buildCteHierarchy = (docs: any[]) => {
+    const normalizeNum = (type: Document['type'], n: string) => {
+      const s = String(n || '').trim();
+      if (!s) return s;
+      // limpeza visual (não altera dados persistidos)
+      if (type === 'CTe') return s.replace(/^CTe[-\s]*/i, '').replace(/^CT-?e[-\s]*/i, '');
+      return s.replace(/^NF[-\s]*/i, '');
+    };
 
-    const groups = Array.from(cteNumbers).sort().map(cteNumber => {
-      const cteDoc = docs.find(d => d.type === 'CTe' && d.number === cteNumber);
-      const dfes = docs
-        .filter(d => d.linkedCteNumber === cteNumber && d.number !== cteNumber)
-        .sort((a, b) => a.number.localeCompare(b.number));
-      return { cteNumber, cteDoc, dfes };
-    });
+    const safeDocs: Document[] = Array.isArray(docs)
+      ? docs.filter(Boolean).filter((d: any) => d && typeof d === 'object' && typeof d.type === 'string' && typeof d.number === 'string')
+      : [];
 
-    const semCte = docs
-      .filter(d => d.type !== 'CTe' && !d.linkedCteNumber)
-      .sort((a, b) => a.number.localeCompare(b.number));
+    const toStringArray = (v: any): string[] => {
+      if (!v) return [];
+      if (Array.isArray(v)) return v.map(String).filter(Boolean);
+      if (typeof v === 'string') {
+        const s = v.trim();
+        if (!s) return [];
+        // tenta JSON array primeiro
+        if ((s.startsWith('[') && s.endsWith(']')) || (s.startsWith('"') && s.endsWith('"'))) {
+          try {
+            const parsed = JSON.parse(s);
+            if (Array.isArray(parsed)) return parsed.map(String).filter(Boolean);
+          } catch {
+            // ignore
+          }
+        }
+        return [];
+      }
+      return [];
+    };
 
-    const totalDfes = groups.reduce((acc, g) => acc + g.dfes.length, 0) + semCte.length;
-    return { groups, semCte, totalDfes };
+    const cteDocs = safeDocs.filter(d => d.type === 'CTe');
+    const nfDocs = safeDocs.filter(d => d.type !== 'CTe');
+
+    // Mapa CT-e -> referências (chaves) e NF-e vinculadas
+    const groups = cteDocs
+      .map(cte => ({
+        cteNumber: normalizeNum('CTe', cte.number),
+        cteDoc: cte,
+        referencedKeys: new Set<string>(toStringArray((cte as any).relatedDfeKeys).filter(Boolean)),
+        dfes: [] as Document[],
+        missingReferencedKeys: [] as string[]
+      }))
+      .sort((a, b) => a.cteNumber.localeCompare(b.cteNumber));
+
+    const groupsByNumber = new Map(groups.map(g => [g.cteNumber, g]));
+
+    // Index rápido: chave -> CT-e (se referenciado)
+    const keyToCte = new Map<string, string[]>();
+    for (const g of groups) {
+      for (const k of g.referencedKeys) {
+        if (!keyToCte.has(k)) keyToCte.set(k, []);
+        keyToCte.get(k)!.push(g.cteNumber);
+      }
+    }
+
+    const unlinkedNfs: Document[] = [];
+
+    for (const nf of nfDocs) {
+      // 1) vínculo explícito via linkedCteNumber (preferencial)
+      const linked = nf.linkedCteNumber ? normalizeNum('CTe', nf.linkedCteNumber) : null;
+      if (linked && groupsByNumber.has(linked)) {
+        groupsByNumber.get(linked)!.dfes.push(nf);
+        continue;
+      }
+
+      // 2) vínculo via referência (dfeKey ∈ relatedDfeKeys do CT-e)
+      const key = nf.dfeKey ? String(nf.dfeKey) : null;
+      if (key && keyToCte.has(key)) {
+        const ctes = keyToCte.get(key)!;
+        const first = ctes[0];
+        if (groupsByNumber.has(first)) {
+          groupsByNumber.get(first)!.dfes.push(nf);
+          continue;
+        }
+      }
+
+      // 3) sem vínculo fiscal claro
+      unlinkedNfs.push(nf);
+    }
+
+    // Ordenações e “missing refs”
+    for (const g of groups) {
+      g.dfes.sort((a, b) => String(a.number).localeCompare(String(b.number)));
+      const presentKeys = new Set(g.dfes.map(d => d.dfeKey).filter(Boolean) as string[]);
+      g.missingReferencedKeys = Array.from(g.referencedKeys).filter(k => !presentKeys.has(k));
+    }
+
+    const nfTotal = nfDocs.length;
+    const nfLinked = groups.reduce((acc, g) => acc + g.dfes.length, 0);
+    const nfUnlinked = unlinkedNfs.length;
+
+    return {
+      groups,
+      unlinkedNfs: unlinkedNfs.sort((a, b) => String(a.number).localeCompare(String(b.number))),
+      counts: { cte: groups.length, nfTotal, nfLinked, nfUnlinked }
+    };
   };
 
-  const { groups, semCte, totalDfes } = buildCteHierarchy(del.documents);
-  const cteCount = groups.length;
+  const deliveryDocs: Document[] = Array.isArray(del.documents) ? del.documents : [];
+  const { groups, unlinkedNfs, counts } = buildCteHierarchy(deliveryDocs);
+  const cteCount = counts.cte;
 
   return (
     <div ref={setNodeRef} style={style} className="relative flex flex-col md:flex-row items-start gap-4 group mb-4">
@@ -152,10 +232,11 @@ const SortableDeliveryItem = ({
               {/* Summary */}
               <div className="flex items-center gap-6">
                   <div className="text-right hidden md:block">
-                      <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-0.5">Volumes</div>
+                      <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-0.5">Documentos</div>
                       <div className="text-xs font-black text-gray-800 flex items-center justify-end gap-2">
-                          {cteCount > 0 && <span className="bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded border border-blue-100">CT-e: {cteCount}</span>}
-                          <span>Total: {totalDfes}</span>
+                          {cteCount > 0 && <span className="bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded border border-blue-100">CT-e: {counts.cte}</span>}
+                          <span>DF-e: {counts.nfTotal}</span>
+                          {counts.nfUnlinked > 0 && <span className="bg-orange-50 text-orange-800 px-1.5 py-0.5 rounded border border-orange-100">Pendentes: {counts.nfUnlinked}</span>}
                       </div>
                   </div>
                   <div className={`p-1 rounded-full transition-transform duration-300 ${expandedDeliveryId === del.id ? 'rotate-180 bg-gray-100' : ''}`}>
@@ -176,31 +257,49 @@ const SortableDeliveryItem = ({
                                   <div key={g.cteNumber} className="bg-white border border-blue-100 rounded-xl p-3 shadow-sm">
                                       <div className="flex items-center gap-2 mb-2 border-b border-gray-50 pb-2">
                                           <LinkIcon size={12} className="text-blue-500"/>
-                                          <span className="text-xs font-black text-blue-700">CT-e {g.cteNumber}</span>
-                                          {g.cteDoc?.controlNumber && <span className="text-[10px] text-gray-400 uppercase font-bold ml-auto">OP: {g.cteDoc.controlNumber}</span>}
+                                          <span className="text-xs font-black text-blue-700">
+                                            CT-e {g.cteNumber}
+                                          </span>
+                                          {(g.cteDoc as any)?.isSubcontracted && (
+                                            <span className="text-[9px] font-black text-orange-700 bg-orange-50 border border-orange-200 px-2 py-0.5 rounded uppercase ml-2">
+                                              Subcontratado
+                                            </span>
+                                          )}
                                       </div>
                                       <div className="flex flex-wrap gap-2">
                                           {g.dfes.map(d => (
                                               <div key={d.id} className="px-2 py-1 bg-gray-50 rounded border border-gray-100 text-[10px] font-bold text-gray-600 flex items-center gap-1">
-                                                  <FileText size={10} className="text-gray-400"/> {d.number}
+                                                  <FileText size={10} className="text-gray-400"/> {String(d.number).replace(/^NF[-\s]*/i,'')}
                                               </div>
                                           ))}
-                                          {g.dfes.length === 0 && <span className="text-[10px] text-gray-400 italic">Sem notas vinculadas</span>}
+                                          {g.dfes.length === 0 && (
+                                            <span className="text-[10px] text-gray-400 italic">
+                                              Sem DF-es vinculadas nesta entrega.
+                                            </span>
+                                          )}
                                       </div>
+                                      {g.missingReferencedKeys.length > 0 && (
+                                        <div className="mt-2 text-[10px] text-gray-500">
+                                          Referenciadas no CT-e e não encontradas aqui: <span className="font-bold">{g.missingReferencedKeys.length}</span>
+                                        </div>
+                                      )}
                                   </div>
                               ))}
-                              {semCte.length > 0 && (
+                              {unlinkedNfs.length > 0 && (
                                   <div className="bg-white border border-orange-100 rounded-xl p-3 shadow-sm">
                                       <div className="flex items-center gap-2 mb-2 border-b border-gray-50 pb-2">
                                           <AlertCircle size={12} className="text-orange-500"/>
-                                          <span className="text-xs font-black text-orange-700">Notas Pendentes (Sem CT-e)</span>
+                                          <span className="text-xs font-black text-orange-700">DF-es sem vínculo fiscal com CT-e</span>
                                       </div>
                                       <div className="flex flex-wrap gap-2">
-                                          {semCte.map(d => (
+                                          {unlinkedNfs.map(d => (
                                               <div key={d.id} className="px-2 py-1 bg-orange-50 rounded border border-orange-100 text-[10px] font-bold text-orange-800 flex items-center gap-1">
-                                                  <FileText size={10}/> {d.number}
+                                                  <FileText size={10}/> {String(d.number).replace(/^NF[-\s]*/i,'')}
                                               </div>
                                           ))}
+                                      </div>
+                                      <div className="mt-2 text-[10px] text-orange-700">
+                                        Isto significa: existe CT-e na carga, mas estas DF-es não estão referenciadas (via chave/`linkedCteNumber`) — precisam de vínculo claro.
                                       </div>
                                   </div>
                               )}
@@ -210,7 +309,7 @@ const SortableDeliveryItem = ({
 
                   <div className="px-5 py-3 bg-white border-t border-gray-100 flex justify-between items-center">
                       <div className="font-bold text-xs text-gray-900">
-                          Total: {del.documents.reduce((acc: number, d: any) => acc + d.value, 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                          Total: {deliveryDocs.reduce((acc: number, d: any) => acc + (Number(d.value) || 0), 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
                       </div>
                       <div className="flex gap-2">
                           {del.status !== 'Delivered' && (
@@ -265,6 +364,10 @@ export const TripDetails: React.FC<TripDetailsProps> = ({
   onAttachLoadsToTrip,
   onReorderDeliveries
 }) => {
+  // Defensive: API/mock pode vir com campos incompletos; nunca derrubar a UI
+  const safeLegs: Leg[] = Array.isArray((trip as any)?.legs) ? ((trip as any).legs as Leg[]) : [];
+  const safeDeliveries = (leg: any): Delivery[] => Array.isArray(leg?.deliveries) ? leg.deliveries : [];
+
   // UI State for Forms
   const [activeLegForm, setActiveLegForm] = useState<'LOAD' | 'EMPTY' | null>(null);
   const [showDeliveryForm, setShowDeliveryForm] = useState<string | null>(null); // Stores the Leg ID
@@ -323,7 +426,9 @@ export const TripDetails: React.FC<TripDetailsProps> = ({
     const toKey = (doc: AvailableDocument) => {
       if (doc.type === 'CTe') return `CTE:${doc.number}`;
       if (doc.linkedCteNumber) return `CTE:${doc.linkedCteNumber}`;
-      return `CTRL:${doc.controlNumber || 'SEM-CONTROLE'}`;
+      // Sem control_number nesta fase: backlog agrupa por DESTINO (regra fiscal: CT-e por destinatário/destino)
+      // Obs.: ainda não temos CNPJ/CPF no modelo, então usamos destinatário + cidade como chave operacional.
+      return `DEST:${doc.destinationCity}|${doc.recipientName}`;
     };
 
     availableDocs.forEach(doc => {
@@ -376,18 +481,19 @@ export const TripDetails: React.FC<TripDetailsProps> = ({
     let defaultOriginCity = '';
     let defaultOriginAddress = '';
 
-    if (trip.legs.length === 0) {
+    if (safeLegs.length === 0) {
       defaultOriginCity = trip.originCity || '';
       defaultOriginAddress = 'Pátio da Empresa / Matriz';
     } else {
-      const lastLeg = trip.legs[trip.legs.length - 1];
+      const lastLeg = safeLegs[safeLegs.length - 1];
 
       if (lastLeg.type === 'EMPTY') {
         defaultOriginCity = lastLeg.destinationCity || '';
         defaultOriginAddress = 'Ponto de Parada (Fim do Vazio)';
       } else {
-        if (lastLeg.deliveries.length > 0) {
-          const lastDelivery = lastLeg.deliveries[lastLeg.deliveries.length - 1];
+        const lastDeliveries = safeDeliveries(lastLeg);
+        if (lastDeliveries.length > 0) {
+          const lastDelivery = lastDeliveries[lastDeliveries.length - 1];
           defaultOriginCity = lastDelivery.destinationCity;
           defaultOriginAddress = lastDelivery.destinationAddress;
         } else {
@@ -413,7 +519,7 @@ export const TripDetails: React.FC<TripDetailsProps> = ({
 
   const isContraNeeded = (doc: AvailableDocument) => {
     if (doc.type === 'NF') return !doc.linkedCteNumber;
-    if (doc.type === 'CTe') return /TERC|EXT/i.test(doc.number);
+    if (doc.type === 'CTe') return !!doc.isSubcontracted;
     return false;
   };
 
@@ -439,7 +545,7 @@ export const TripDetails: React.FC<TripDetailsProps> = ({
             return;
         }
         controlGroups = keys.map(key => ({
-            controlNumber: key.startsWith('CTE:') ? key.split(':')[1] : (key.startsWith('CTRL:') ? key.split(':')[1] : key),
+        controlNumber: key.startsWith('CTE:') ? key.split(':')[1] : (key.startsWith('DEST:') ? key.split(':')[1] : key),
             docs: groupedAvailableDocs[key] || []
         }));
     }
@@ -488,18 +594,19 @@ export const TripDetails: React.FC<TripDetailsProps> = ({
     let defaultOriginCity = '';
     let defaultOriginAddress = '';
 
-    if (trip.legs.length === 0) {
+    if (safeLegs.length === 0) {
       defaultOriginCity = trip.originCity || '';
       defaultOriginAddress = 'Pátio da Empresa / Matriz';
     } else {
-      const lastLeg = trip.legs[trip.legs.length - 1];
+      const lastLeg = safeLegs[safeLegs.length - 1];
 
       if (lastLeg.type === 'EMPTY') {
         defaultOriginCity = lastLeg.destinationCity || '';
         defaultOriginAddress = 'Ponto de Parada (Fim do Vazio)';
       } else {
-        if (lastLeg.deliveries.length > 0) {
-          const lastDelivery = lastLeg.deliveries[lastLeg.deliveries.length - 1];
+        const lastDeliveries = safeDeliveries(lastLeg);
+        if (lastDeliveries.length > 0) {
+          const lastDelivery = lastDeliveries[lastDeliveries.length - 1];
           defaultOriginCity = lastDelivery.destinationCity;
           defaultOriginAddress = lastDelivery.destinationAddress;
         } else {
@@ -553,17 +660,20 @@ export const TripDetails: React.FC<TripDetailsProps> = ({
     onAddDocument(trip.id, legId, deliveryId, {
       number: newDoc.number,
       type: 'NF',
-      controlNumber: 'MANUAL',
+      controlNumber: undefined,
       value: Number(newDoc.value) || 0
     });
     setShowDocForm(null);
     setNewDoc({ number: '', type: 'NF', value: '' });
   };
 
-  const totalRevenue = trip.legs.reduce((acc, leg) =>
-    acc + leg.deliveries.reduce((dAcc, del) =>
-      dAcc + del.documents
-        .reduce((docAcc, doc) => docAcc + doc.value, 0), 0), 0);
+  const totalRevenue = safeLegs.reduce((acc, leg) => {
+    const deliveries = safeDeliveries(leg);
+    return acc + deliveries.reduce((dAcc, del) => {
+      const docs = Array.isArray((del as any)?.documents) ? (del as any).documents : [];
+      return dAcc + docs.reduce((docAcc: number, doc: any) => docAcc + (Number(doc?.value) || 0), 0);
+    }, 0);
+  }, 0);
 
   // Helpers for numbering
   let loadCount = 0;
@@ -588,7 +698,7 @@ export const TripDetails: React.FC<TripDetailsProps> = ({
             </button>
             <div className="flex gap-2">
               <span className={`px-3 py-1 rounded-full text-sm font-medium ${trip.status === 'In Transit' ? 'bg-blue-100 text-blue-700' : 'bg-gray-200 text-gray-700'}`}>
-                {trip.status === 'In Transit' ? 'Em Trânsito' : trip.status}
+                {tripStatusLabelPt(trip.status)}
               </span>
             </div>
           </div>
@@ -626,20 +736,20 @@ export const TripDetails: React.FC<TripDetailsProps> = ({
              </div>
 
              <button className="bg-blue-100 text-blue-700 px-4 py-2 rounded-lg text-xs font-bold uppercase hover:bg-blue-200 transition-colors">
-                {trip.status === 'In Transit' ? 'Em Trânsito' : trip.status}
+               {tripStatusLabelPt(trip.status)}
              </button>
         </div>
 
         {/* --- CARGAS & DESLOCAMENTOS (Visual Timeline) --- */}
         <div className="space-y-6">
-            {trip.legs.length === 0 && !activeLegForm && (
+            {safeLegs.length === 0 && !activeLegForm && (
                 <div className="p-16 text-center border-2 border-dashed border-gray-200 rounded-2xl bg-gray-50/50">
                     <p className="text-gray-400 font-medium mb-3">O roteiro desta viagem está vazio.</p>
                     <button onClick={() => handleOpenLegForm('LOAD')} className="text-blue-600 font-bold hover:underline">Adicione a primeira carga</button>
                 </div>
             )}
 
-            {trip.legs.map((leg, legIndex) => {
+            {safeLegs.map((leg, legIndex) => {
               const isLoad = leg.type === 'LOAD';
               const cardBorderClass = isLoad ? 'border-gray-200' : 'border-gray-200 bg-gray-50/50';
 
@@ -658,6 +768,15 @@ export const TripDetails: React.FC<TripDetailsProps> = ({
                                 <span className="bg-black text-white px-4 py-1.5 rounded-lg text-xs font-black uppercase tracking-wider shadow-lg">
                                     Carga #{currentLoadNum}
                                 </span>
+                                {leg.direction && (
+                                    <span className={`px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider border ${
+                                      leg.direction === 'Ida'
+                                        ? 'bg-blue-50 text-blue-700 border-blue-200'
+                                        : 'bg-orange-50 text-orange-700 border-orange-200'
+                                    }`}>
+                                        {leg.direction}
+                                    </span>
+                                )}
                                 {leg.segment && (
                                     <span className="bg-gray-100 text-gray-600 px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider border border-gray-200 flex items-center gap-1.5">
                                         <Tag size={10} /> {leg.segment}
@@ -708,15 +827,15 @@ export const TripDetails: React.FC<TripDetailsProps> = ({
                         {/* --- DESTINATION / DELIVERIES NODES --- */}
                         {isLoad ? (
                             <>
-                                {leg.deliveries.length === 0 ? (
+                                {safeDeliveries(leg).length === 0 ? (
                                     <div className="relative flex items-start gap-6 opacity-50">
                                          <div className="relative z-10 w-6 h-6 rounded-full bg-gray-100 border-4 border-white shadow-sm ring-1 ring-gray-300 flex items-center justify-center shrink-0 mt-1"></div>
                                          <div className="flex-1 italic text-gray-400 text-sm pt-1">Nenhuma entrega definida...</div>
                                     </div>
                                 ) : (
-                                    <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={(e) => handleDragEnd(e, leg.id, leg.deliveries)}>
-                                        <SortableContext items={leg.deliveries.map(d => d.id)} strategy={verticalListSortingStrategy}>
-                                            {leg.deliveries.map((del, dIdx) => (
+                                    <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={(e) => handleDragEnd(e, leg.id, safeDeliveries(leg))}>
+                                        <SortableContext items={safeDeliveries(leg).map(d => d.id)} strategy={verticalListSortingStrategy}>
+                                            {safeDeliveries(leg).map((del, dIdx) => (
                                                 <SortableDeliveryItem
                                                     key={del.id}
                                                     delivery={del}
@@ -738,18 +857,32 @@ export const TripDetails: React.FC<TripDetailsProps> = ({
                                     </DndContext>
                                 )}
 
-                                {/* Add Delivery Button (Dashed) */}
+                                {/* Add Load (Leg) Button (Dashed) */}
                                 <div className="relative pl-0">
-                                    <button
+                                    {safeDeliveries(leg).length > 0 ? (
+                                      <button
                                         disabled={trip.status === 'Completed'}
-                                        onClick={() => setShowDeliveryForm(leg.id)}
-                                        className="w-full py-3 border-2 border-dashed border-purple-200/60 bg-purple-50/30 text-purple-400 rounded-xl flex items-center justify-center gap-2 hover:bg-purple-50 hover:border-purple-300 hover:text-purple-600 transition-all group"
-                                    >
-                                        <div className="w-5 h-5 rounded-full bg-purple-100 flex items-center justify-center group-hover:scale-110 transition-transform">
-                                            <Plus size={12} className="text-purple-600"/>
+                                        onClick={() => openNewLoadWizard()}
+                                        className="w-full py-3 border-2 border-dashed border-gray-200 bg-gray-50/50 text-gray-500 rounded-xl flex items-center justify-center gap-2 hover:bg-gray-50 hover:border-gray-300 hover:text-gray-700 transition-all group"
+                                        title="Regra fiscal: múltiplos destinos exigem CT-es distintos. Crie uma nova Carga (Leg) para outro destino."
+                                      >
+                                        <div className="w-5 h-5 rounded-full bg-gray-100 flex items-center justify-center group-hover:scale-110 transition-transform">
+                                            <Plus size={12} className="text-gray-700"/>
                                         </div>
-                                        <span className="text-xs font-bold uppercase tracking-widest">Adicionar Entrega (por CT-e ou Nº Controle)</span>
-                                    </button>
+                                        <span className="text-xs font-bold uppercase tracking-widest">Adicionar nova Carga (outro destino)</span>
+                                      </button>
+                                    ) : (
+                                      <button
+                                          disabled={trip.status === 'Completed'}
+                                          onClick={() => setShowDeliveryForm(leg.id)}
+                                          className="w-full py-3 border-2 border-dashed border-purple-200/60 bg-purple-50/30 text-purple-400 rounded-xl flex items-center justify-center gap-2 hover:bg-purple-50 hover:border-purple-300 hover:text-purple-600 transition-all group"
+                                      >
+                                          <div className="w-5 h-5 rounded-full bg-purple-100 flex items-center justify-center group-hover:scale-110 transition-transform">
+                                              <Plus size={12} className="text-purple-600"/>
+                                          </div>
+                                          <span className="text-xs font-bold uppercase tracking-widest">Vincular documentos (CT-e / destino)</span>
+                                      </button>
+                                    )}
                                 </div>
                             </>
                         ) : (
@@ -924,7 +1057,7 @@ export const TripDetails: React.FC<TripDetailsProps> = ({
                       <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16} />
                       <input
                         type="text"
-                        placeholder="Filtrar por CT-e / Nº Controle / Destinatário..."
+                        placeholder="Filtrar por CT-e / NF-e / Destinatário..."
                         className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none text-sm"
                         value={filterText}
                         onChange={e => setFilterText(e.target.value)}
@@ -1078,7 +1211,11 @@ export const TripDetails: React.FC<TripDetailsProps> = ({
                                   {isSelected && <Check size={10} className="text-white" />}
                                 </span>
                                 <span className="font-black text-gray-900 text-lg tabular-nums">
-                                  {key.startsWith('CTE:') ? key.replace('CTE:','CT-e ') : key.replace('CTRL:','')}
+                                  {key.startsWith('CTE:')
+                                    ? key.replace('CTE:','CT-e ')
+                                    : key.startsWith('DEST:')
+                                      ? key.replace('DEST:', '').split('|')[0]
+                                      : key}
                                 </span>
                                 {contraCount > 0 && (
                                   <span className="text-[10px] font-black text-orange-700 bg-orange-50 border border-orange-200 px-2 py-0.5 rounded uppercase">
@@ -1141,7 +1278,7 @@ export const TripDetails: React.FC<TripDetailsProps> = ({
             <div className="fixed inset-0 bg-black/50 z-[100] flex items-center justify-center p-4">
                 <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col">
                     <div className="p-4 border-b border-gray-100 flex justify-between items-center">
-                        <h3 className="font-bold text-lg text-gray-800">Selecionar Nº Controle (Embarcador)</h3>
+                                        <h3 className="font-bold text-lg text-gray-800">Selecionar grupo (CT-e / NF-e)</h3>
                         <button onClick={() => { setShowDeliveryForm(null); setSelectedControlNumber(null); }} className="text-gray-400 hover:text-gray-600"><X size={20}/></button>
                     </div>
 
@@ -1151,14 +1288,14 @@ export const TripDetails: React.FC<TripDetailsProps> = ({
                             <input
                                 autoFocus
                                 type="text"
-                                placeholder="Filtrar por Nº Controle, Destinatário..."
+                                placeholder="Filtrar por CT-e, NF-e, Destinatário..."
                                 className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none text-sm"
                                 value={filterText}
                                 onChange={e => setFilterText(e.target.value)}
                             />
                         </div>
                         <p className="text-xs text-gray-500 mt-2 px-1">
-                            Selecione o grupo abaixo (por CT-e quando existir, senão por Nº Controle) para adicionar todos os documentos vinculados.
+                            Regra fiscal: selecione o grupo abaixo por **CT-e** (quando existir) ou por **Destino** (para montar a Carga/Leg).
                         </p>
                     </div>
 
@@ -1190,7 +1327,11 @@ export const TripDetails: React.FC<TripDetailsProps> = ({
                                                         {isSelected && <Check size={10} className="text-white"/>}
                                                     </span>
                                                     <span className="font-bold text-gray-900 text-lg tabular-nums">
-                                                      {key.startsWith('CTE:') ? key.replace('CTE:','CT-e ') : key.replace('CTRL:','')}
+                                                      {key.startsWith('CTE:')
+                                                        ? key.replace('CTE:','CT-e ')
+                                                        : key.startsWith('DEST:')
+                                                          ? key.replace('DEST:', '').split('|')[0]
+                                                          : key}
                                                     </span>
                                                 </div>
                                                 <div className="text-sm text-gray-600 mt-1 ml-6">{first.recipientName}</div>

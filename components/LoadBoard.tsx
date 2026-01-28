@@ -18,6 +18,20 @@ interface LoadBoardProps {
     onUpdateStatus: (tripId: string, status: Trip['status'], pod?: string) => void;
 }
 
+const inferLegDirection = (trip: Trip, leg: any): 'Ida' | 'Retorno' | undefined => {
+    if (!leg || leg.type !== 'LOAD') return undefined;
+    if (leg.direction) return leg.direction;
+    const o = (leg.originCity || '').trim();
+    const d = (leg.destinationCity || '').trim();
+    const tripOrigin = (trip.originCity || '').trim();
+    const tripMain = (trip.mainDestination || '').trim();
+    if (tripOrigin && o === tripOrigin) return 'Ida';
+    if (tripOrigin && d === tripOrigin) return 'Retorno';
+    if (tripMain && d === tripMain) return 'Ida';
+    if (tripMain && o === tripMain) return 'Retorno';
+    return undefined;
+};
+
 // ===== HELPERS =====
 
 // Calcula horas até o deadline
@@ -154,7 +168,7 @@ const LoadCard = ({
             <div className="flex justify-between items-start mb-2">
                 <div className="flex items-center gap-2">
                     <span className="text-[9px] font-black text-gray-400 uppercase tracking-widest">
-                        #{load.id.replace('load-', 'CRG-').substring(0, 10)}
+                        #{load.id.startsWith('leg-') ? load.id.replace('leg-', 'LEG-').substring(0, 10) : load.id.replace('load-', 'CRG-').substring(0, 10)}
                     </span>
                     {status === 'Pendente' && <UrgencyBadge level={urgency} />}
                     {direction && (
@@ -658,7 +672,7 @@ export const LoadBoard: React.FC<LoadBoardProps> = ({ loads, trips, vehicles, ci
                     status: getLoadStatusFromTrip(status),
                     _trip: t,
                     _progress: status === 'Picking Up' ? 30 : (status === 'In Transit' ? 60 : 100),
-                    direction: leg.direction // Pass direction to LoadCard
+                    direction: inferLegDirection(t, leg) // Ida/Retorno (mesmo quando não vier explícito)
                 } as any))
             );
     };
@@ -686,8 +700,8 @@ export const LoadBoard: React.FC<LoadBoardProps> = ({ loads, trips, vehicles, ci
             {/* Conteúdo Principal */}
             <div className="flex flex-1 overflow-hidden">
                 {/* Board */}
-                <div className="flex-1 overflow-x-auto overflow-y-hidden p-4 custom-scrollbar">
-                    <div className="flex gap-4 h-full min-w-[1800px]">
+                <div className="flex-1 overflow-x-auto overflow-y-hidden p-3 sm:p-4 custom-scrollbar">
+                    <div className="flex gap-3 lg:gap-4 h-full min-w-[1300px] sm:min-w-[1500px] lg:min-w-[1800px]">
 
                         {/* COL 1: Cargas Disponíveis (Backlog) */}
                         <Column

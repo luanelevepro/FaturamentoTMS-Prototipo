@@ -1,0 +1,14 @@
+diff --git a/package.json b/package.json
+index 5179ea125cbeb8bf827bf3832f34c293f6e55372..1f89a7d4d5c87c94db584ba6169bcedfc67a4052 100644
+--- a/package.json
++++ b/package.json
+@@ -8,8 +8,7 @@
+     "dragndev": "cli.js"
+   },
+   "scripts": {
+-    "test": "echo \"Error: no test specified\" && exit 1",
+-    "postinstall": "node postinstall.js"
++    "test": "echo \"Error: no test specified\" && exit 1"
+   },
+   "author": "",
+   "license": "ISC",

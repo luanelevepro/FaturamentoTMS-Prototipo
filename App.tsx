@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import type { AvailableDocument, Delivery, Leg, Load, Trip, Vehicle, ViewState, Document as TripDocument } from './types';
 import { fetchTripsBootstrap, getMockTripsBootstrap, TripShell } from './modules/trips';
+import { validateSegmentCompatibility, validateAddLoadToTrip, validateEmitCTe } from './lib/validations';
 
 // Mocks moved to mocks.ts
 
@@ -60,6 +61,19 @@ export default function App() {
   };
 
   const handleScheduleLoad = (load: Load, vehicle: Vehicle, segment: string, customOrigin: string, controlNumber: string) => {
+    // Validação de compatibilidade de segmento (Hard Block)
+    const segmentValidation = validateSegmentCompatibility(vehicle, load);
+    
+    if (!segmentValidation.valid) {
+      alert(`❌ BLOQUEIO: ${segmentValidation.error}`);
+      return;
+    }
+
+    // Atualiza a carga para status 'Scheduled' quando vinculada à viagem
+    setLoads(loads.map(l => 
+      l.id === load.id ? { ...l, status: 'Scheduled' as const } : l
+    ));
+
     const newTrip: Trip = {
       id: (trips.length + 1000).toString(),
       createdAt: new Date().toISOString(),
@@ -70,15 +84,18 @@ export default function App() {
       originCity: customOrigin || load.originCity,
       mainDestination: load.destinationCity || 'A definir',
       freightValue: 0,
+      segment: segment || load.segment, // Define segmento da viagem
       legs: [
         {
           id: `leg-${Date.now()}`,
           type: 'LOAD',
           sequence: 1,
+          direction: 'Ida',
           originCity: customOrigin || load.originCity,
           originAddress: 'Operacional',
           destinationCity: load.destinationCity || undefined,
           segment: segment,
+          loadId: load.id, // Vincula a carga à leg
           // Se ainda não temos Nº Controle/docs, a carga pode nascer sem entregas e ser montada depois no detalhe
           deliveries: controlNumber ? [
             {
@@ -88,13 +105,17 @@ export default function App() {
               destinationAddress: 'Endereço Cliente',
               recipientName: load.clientName,
               status: 'Pending',
+              loadId: load.id, // Vincula a entrega à carga
+              attemptNumber: 1,
               documents: [
-                { id: `doc-${Date.now()}`, number: 'NF-000000', type: 'NF', value: 0, weight: 0, controlNumber: controlNumber }
+                // placeholder (numeração sem prefixo)
+                { id: `doc-${Date.now()}`, number: '000000', type: 'NF', value: 0, weight: 0, controlNumber: undefined }
               ]
             }
           ] : []
         }
-      ]
+      ],
+      loads: [load] // Adiciona a carga à viagem para facilitar acesso
     };
 
     setTrips([...trips, newTrip]);
@@ -159,6 +180,74 @@ export default function App() {
     }
   };
 
+  // Handler para "emitir" CT-e (apenas visual/gerencial, sem integração real)
+  const handleEmitCTe = (loadId: string) => {
+    const load = loads.find(l => l.id === loadId);
+    if (!load) return;
+
+    // Encontra a viagem que contém esta carga
+    const trip = trips.find(t => 
+      t.loads?.some(l => l.id === loadId) || 
+      t.legs.some(leg => leg.loadId === loadId)
+    );
+
+    // Validação antes de emitir
+    const validation = validateEmitCTe(load, trip || null);
+    
+    if (!validation.valid) {
+      alert(`❌ BLOQUEIO: ${validation.error}`);
+      return;
+    }
+
+    // Atualiza o estado da carga para "Emitted" e cria um CT-e mock
+    setLoads(loads.map(l => {
+      if (l.id === loadId && l.status === 'Scheduled') {
+        const mockCTe = {
+          id: `cte-${Date.now()}`,
+          loadId: l.id,
+          number: `CTE${String(Math.floor(Math.random() * 1000000)).padStart(6, '0')}`,
+          accessKey: `352${new Date().getFullYear()}${String(Math.floor(Math.random() * 100000000000000000000000000000000000000000)).padStart(44, '0')}`,
+          freightValue: l.weight ? l.weight * 2.5 : 1500, // Mock: R$ 2,50/kg ou R$ 1500 fixo
+          status: 'Authorized' as const,
+          emissionDate: new Date().toISOString(),
+          authorizationDate: new Date().toISOString(),
+          createdAt: new Date().toISOString()
+        };
+        return {
+          ...l,
+          status: 'Emitted' as const,
+          cte: mockCTe
+        };
+      }
+      return l;
+    }));
+
+    // Também atualiza a carga dentro da viagem se existir
+    setTrips(trips.map(t => {
+      if (t.loads?.some(l => l.id === loadId)) {
+        return {
+          ...t,
+          loads: t.loads.map(l => 
+            l.id === loadId 
+              ? { ...l, status: 'Emitted' as const, cte: {
+                  id: `cte-${Date.now()}`,
+                  loadId: l.id,
+                  number: `CTE${String(Math.floor(Math.random() * 1000000)).padStart(6, '0')}`,
+                  accessKey: `352${new Date().getFullYear()}${String(Math.floor(Math.random() * 100000000000000000000000000000000000000000)).padStart(44, '0')}`,
+                  freightValue: l.weight ? l.weight * 2.5 : 1500,
+                  status: 'Authorized' as const,
+                  emissionDate: new Date().toISOString(),
+                  authorizationDate: new Date().toISOString(),
+                  createdAt: new Date().toISOString()
+                } }
+              : l
+          )
+        };
+      }
+      return t;
+    }));
+  };
+
   const handleUpdateDeliveryStatus = (tripId: string, legId: string, deliveryId: string, status: Delivery['status'], pod?: string) => {
     setTrips(prev => prev.map(t => {
       if (t.id !== tripId) return t;
@@ -196,10 +285,24 @@ export default function App() {
   const handleAddLeg = (tripId: string, legData: Omit<Leg, 'id' | 'sequence' | 'deliveries'>) => {
     setTrips(prev => prev.map(t => {
       if (t.id !== tripId) return t;
+      const inferDirection = (trip: Trip, leg: any): Leg['direction'] => {
+        if (leg.type !== 'LOAD') return undefined;
+        if (leg.direction) return leg.direction;
+        const o = (leg.originCity || '').trim();
+        const d = (leg.destinationCity || '').trim();
+        const tripOrigin = (trip.originCity || '').trim();
+        const tripMain = (trip.mainDestination || '').trim();
+        if (tripOrigin && o === tripOrigin) return 'Ida';
+        if (tripOrigin && d === tripOrigin) return 'Retorno';
+        if (tripMain && d === tripMain) return 'Ida';
+        if (tripMain && o === tripMain) return 'Retorno';
+        return undefined;
+      };
       const newLeg: Leg = {
         id: `leg-${Date.now()}`,
         sequence: t.legs.length + 1,
         deliveries: [],
+        direction: inferDirection(t, legData as any),
         ...legData
       };
       return { ...t, legs: [...t.legs, newLeg] };
@@ -224,8 +327,11 @@ export default function App() {
             type: d.type,
             value: d.value,
             weight: d.weight,
-            controlNumber: d.controlNumber,
-            linkedCteNumber: d.type === 'NF' ? undefined : undefined // Only link if explicit logic exists, keeping simple for now
+            controlNumber: undefined, // será definido pelo sistema depois (OP/controle operacional)
+            linkedCteNumber: d.linkedCteNumber,
+            dfeKey: (d as any).dfeKey,
+            relatedDfeKeys: (d as any).relatedDfeKeys,
+            isSubcontracted: (d as any).isSubcontracted
           }));
 
           const newDelivery: Delivery = {
@@ -247,55 +353,99 @@ export default function App() {
   // Novo fluxo: criar uma nova carga dentro da viagem já com entregas/documentos (a partir de control groups)
   const handleAddLoadWithDeliveries = (tripId: string, payload: { originCity: string; originAddress: string; segment?: string; controlGroups: { controlNumber: string; docs: AvailableDocument[] }[] }) => {
     const now = Date.now();
-    const newLegId = `leg-${now}`;
-
-    const deliveries: Delivery[] = (payload.controlGroups || []).map((g, idx) => {
-      const first = g.docs[0];
-      const docs: TripDocument[] = g.docs.map(d => ({
-        id: `doc-${now}-${d.id}`,
-        number: d.number,
-        type: d.type,
-        value: d.value,
-        weight: d.weight,
-        controlNumber: g.controlNumber,
-        linkedCteNumber: d.linkedCteNumber,
-        dfeKey: (d as any).dfeKey,
-        relatedDfeKeys: (d as any).relatedDfeKeys
-      }));
-
-      return {
-        id: `del-${now}-${idx}`,
-        sequence: idx + 1,
-        destinationCity: first?.destinationCity || 'Destino Indefinido',
-        destinationAddress: first?.destinationAddress || 'Endereço Indefinido',
-        recipientName: first?.recipientName || 'Destinatário',
-        status: 'Pending',
-        documents: docs
-      };
-    });
+    // Regra fiscal/operacional: 1 Carga (Leg) = 1 destino (1 Delivery principal) = 1 CT-e
+    // Portanto, cada grupo selecionado vira UMA nova Leg (e não múltiplas deliveries dentro da mesma Leg).
+    const groups = payload.controlGroups || [];
 
     setTrips(prev => prev.map(t => {
       if (t.id !== tripId) return t;
-      const sequence = t.legs.length + 1;
-      const newLeg: Leg = {
-        id: newLegId,
-        type: 'LOAD',
-        sequence,
-        originCity: payload.originCity,
-        originAddress: payload.originAddress,
-        vehicleTypeReq: (payload as any).vehicleTypeReq,
-        segment: (payload as any).segment,
-        controlNumber: `${Math.floor(10000000 + Math.random() * 90000000)}`,
-        deliveries
-      };
-      return { ...t, legs: [...t.legs, newLeg] };
+      let nextSeq = t.legs.length + 1;
+
+      const newLegs: Leg[] = groups.flatMap((g, gIdx) => {
+        // Segurança: se um grupo vier misturado (múltiplos destinos), split por destino
+        const byDest = new Map<string, AvailableDocument[]>();
+        for (const d of (g.docs || [])) {
+          const k = `${d.destinationCity}|${d.recipientName}`;
+          if (!byDest.has(k)) byDest.set(k, []);
+          byDest.get(k)!.push(d);
+        }
+
+        return Array.from(byDest.entries()).map(([destKey, docsForDest], idx) => {
+          const first = docsForDest[0];
+          const docs: TripDocument[] = docsForDest.map(d => ({
+            id: `doc-${now}-${gIdx}-${idx}-${d.id}`,
+            number: d.number,
+            type: d.type,
+            value: d.value,
+            weight: d.weight,
+            controlNumber: undefined, // OP/controle será gerado depois pelo sistema
+            linkedCteNumber: d.linkedCteNumber,
+            dfeKey: (d as any).dfeKey,
+            relatedDfeKeys: (d as any).relatedDfeKeys,
+            isSubcontracted: (d as any).isSubcontracted
+          }));
+
+          const delivery: Delivery = {
+            id: `del-${now}-${gIdx}-${idx}`,
+            sequence: 1,
+            destinationCity: first?.destinationCity || 'Destino Indefinido',
+            destinationAddress: first?.destinationAddress || 'Endereço Indefinido',
+            recipientName: first?.recipientName || 'Destinatário',
+            status: 'Pending',
+            documents: docs
+          };
+
+          const leg: Leg = {
+            id: `leg-${now}-${gIdx}-${idx}`,
+            type: 'LOAD',
+            sequence: nextSeq++,
+            originCity: payload.originCity,
+            originAddress: payload.originAddress,
+            destinationCity: first?.destinationCity || undefined,
+            vehicleTypeReq: (payload as any).vehicleTypeReq,
+            segment: (payload as any).segment,
+            deliveries: [delivery]
+          };
+
+          return leg;
+        });
+      });
+
+      return { ...t, legs: [...t.legs, ...newLegs] };
     }));
   };
 
   const handleAttachLoadsToTrip = (tripId: string, payload: { loadIds: string[]; vehicleTypeReq: string }) => {
     const now = Date.now();
     const selected = loads.filter(l => payload.loadIds.includes(l.id));
+    const trip = trips.find(t => t.id === tripId);
+    const vehicle = vehicles.find(v => v.plate === trip?.truckPlate);
 
+    if (!trip || !vehicle) {
+      alert('Erro: Viagem ou veículo não encontrado.');
+      return;
+    }
+
+    // Validação completa para cada carga
+    for (const load of selected) {
+      const validation = validateAddLoadToTrip(trip, load, vehicle, 'COMPLEMENTO');
+      
+      if (!validation.valid) {
+        alert(`❌ BLOQUEIO ao adicionar carga "${load.clientName}":\n\n${validation.errors.join('\n')}`);
+        return;
+      }
+      
+      if (validation.warnings.length > 0) {
+        const confirmed = window.confirm(
+          `⚠️ AVISO ao adicionar carga "${load.clientName}":\n\n${validation.warnings.join('\n\n')}\n\nDeseja continuar mesmo assim?`
+        );
+        if (!confirmed) {
+          return;
+        }
+      }
+    }
+
+    // Se passou todas as validações, adiciona as cargas
     setTrips(prev => prev.map(t => {
       if (t.id !== tripId) return t;
       let nextSeq = t.legs.length + 1;
@@ -308,14 +458,22 @@ export default function App() {
         originAddress: 'Embarcador',
         destinationCity: l.destinationCity || undefined,
         vehicleTypeReq: payload.vehicleTypeReq || l.vehicleTypeReq,
+        loadId: l.id,
+        direction: (l.originCity === t.originCity ? 'Ida' : (l.destinationCity === t.originCity ? 'Retorno' : undefined)),
         deliveries: []
       }));
 
-      return { ...t, legs: [...t.legs, ...newLegs] };
+      return { 
+        ...t, 
+        legs: [...t.legs, ...newLegs],
+        loads: [...(t.loads || []), ...selected]
+      };
     }));
 
-    // Remove da coluna "Cargas Disponíveis"
-    setLoads(prev => prev.filter(l => !payload.loadIds.includes(l.id)));
+    // Atualiza status das cargas para 'Scheduled'
+    setLoads(prev => prev.map(l => 
+      payload.loadIds.includes(l.id) ? { ...l, status: 'Scheduled' as const } : l
+    ).filter(l => !payload.loadIds.includes(l.id))); // Remove da coluna "Cargas Disponíveis"
   };
 
   /* New Trip Wizard Handler */
@@ -399,6 +557,7 @@ export default function App() {
         onUpdateStatus={handleUpdateTripStatus}
         onUpdateDeliveryStatus={handleUpdateDeliveryStatus}
         onReorderDeliveries={handleReorderDeliveries}
+        onEmitCTe={handleEmitCTe}
       />
     </>
   );

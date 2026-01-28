@@ -125,7 +125,10 @@ export const TripListV3: React.FC<TripListV3Props> = ({
   const groupedAvailableDocs = useMemo(() => {
     const groups: Record<string, AvailableDocument[]> = {};
     availableDocs.forEach(doc => {
-        const key = doc.controlNumber || 'SEM-CONTROLE';
+        const key =
+          doc.type === 'CTe'
+            ? `CTE:${doc.number}`
+            : (doc.linkedCteNumber ? `CTE:${doc.linkedCteNumber}` : `NFE:${doc.number}`);
         if (!groups[key]) groups[key] = [];
         groups[key].push(doc);
     });
@@ -156,7 +159,7 @@ export const TripListV3: React.FC<TripListV3Props> = ({
 
 
   return (
-    <div className="p-6 bg-gray-100 min-h-screen ml-0 md:ml-64 transition-all font-sans">
+    <div className="p-6 bg-gray-100 min-h-screen transition-all font-sans">
       {/* Header */}
       <div className="flex justify-between items-center mb-6">
          <div>
@@ -321,7 +324,7 @@ export const TripListV3: React.FC<TripListV3Props> = ({
                                                                   <div className="flex gap-1 flex-wrap justify-end">
                                                                        {del.documents.map(doc => (
                                                                            <span key={doc.id} className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-gray-100 text-gray-700 border border-gray-200">
-                                                                               {doc.controlNumber || doc.number}
+                                                                               {doc.type === 'CTe' ? `CT-e ${doc.number}` : `NF-e ${doc.number}`}
                                                                            </span>
                                                                        ))}
                                                                   </div>
@@ -331,24 +334,24 @@ export const TripListV3: React.FC<TripListV3Props> = ({
                                                   </div>
                                               ))}
 
-                                              {/* ADD DELIVERY BUTTON (Using Control Number Logic) */}
+                                              {/* ADD DELIVERY BUTTON (CT-e / NF-e) */}
                                               {leg.type === 'LOAD' && !activeDeliveryForm && (
                                                 <div className="pl-12">
                                                     <button 
                                                         onClick={() => setActiveDeliveryForm({ tripId: trip.id, legId: leg.id })}
                                                         className="flex items-center gap-2 text-xs font-bold text-purple-600 hover:text-purple-800 hover:bg-purple-50 px-3 py-2 rounded-lg border border-dashed border-purple-200 transition-colors w-full"
                                                     >
-                                                        <Plus size={14}/> Adicionar Entrega (Por Nº Controle)
+                                                        <Plus size={14}/> Adicionar Entrega (CT-e / NF-e)
                                                     </button>
                                                 </div>
                                               )}
 
-                                              {/* INLINE ADD DELIVERY FORM (Control Number Selection) */}
+                                              {/* INLINE ADD DELIVERY FORM (CT-e / NF-e) */}
                                               {activeDeliveryForm?.legId === leg.id && (
                                                   <div className="pl-12 animate-in fade-in slide-in-from-top-2">
                                                       <div className="bg-purple-50 border border-purple-100 rounded-lg p-4">
                                                           <div className="flex justify-between items-center mb-3">
-                                                              <h4 className="text-xs font-bold uppercase text-purple-700">Selecione Nº Controle</h4>
+                                                              <h4 className="text-xs font-bold uppercase text-purple-700">Selecione grupo (CT-e / NF-e)</h4>
                                                               <button onClick={() => { setActiveDeliveryForm(null); setSelectedControlNumber(null); }} className="text-gray-400 hover:text-gray-600"><X size={16}/></button>
                                                           </div>
 
@@ -357,7 +360,7 @@ export const TripListV3: React.FC<TripListV3Props> = ({
                                                             <input 
                                                               autoFocus
                                                               type="text"
-                                                              placeholder="Filtrar por Nº Controle, Destinatário..."
+                                                              placeholder="Filtrar por CT-e, NF-e, Destinatário..."
                                                               className="w-full pl-9 pr-3 py-2 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-purple-500 focus:outline-none"
                                                               value={filterText}
                                                               onChange={(e) => setFilterText(e.target.value)}
@@ -366,7 +369,7 @@ export const TripListV3: React.FC<TripListV3Props> = ({
 
                                                           <div className="bg-white rounded border border-gray-200 overflow-hidden mb-4 max-h-48 overflow-y-auto">
                                                               {filteredGroups.length === 0 ? (
-                                                                <div className="p-4 text-center text-sm text-gray-500">Nenhum Nº Controle encontrado.</div>
+                                                                <div className="p-4 text-center text-sm text-gray-500">Nenhum grupo encontrado.</div>
                                                               ) : (
                                                                 <table className="w-full text-left">
                                                                     <tbody className="divide-y divide-gray-100">
@@ -374,6 +377,7 @@ export const TripListV3: React.FC<TripListV3Props> = ({
                                                                             const docs = groupedAvailableDocs[key];
                                                                             const first = docs[0];
                                                                             const isSelected = selectedControlNumber === key;
+                                                                            const label = key.startsWith('CTE:') ? key.replace('CTE:', 'CT-e ') : key.replace('NFE:', 'NF-e ');
                                                                             return (
                                                                                 <tr 
                                                                                   key={key} 
@@ -383,7 +387,7 @@ export const TripListV3: React.FC<TripListV3Props> = ({
                                                                                     <td className="px-3 py-2 w-8">
                                                                                         <input type="checkbox" checked={isSelected} readOnly className="rounded text-purple-600"/>
                                                                                     </td>
-                                                                                    <td className="px-3 py-2 font-medium text-gray-900">{key}</td>
+                                                                                    <td className="px-3 py-2 font-medium text-gray-900 tabular-nums">{label}</td>
                                                                                     <td className="px-3 py-2 text-gray-600 text-xs">{first.recipientName} - {first.destinationCity}</td>
                                                                                 </tr>
                                                                             );

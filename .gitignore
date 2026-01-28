@@ -12,6 +12,12 @@ dist
 dist-ssr
 *.local
 
+# Artifacts / dados locais (não versionar)
+analysis/
+external_data/
+*.bak
+*.pdf
+
 # SQLite (local)
 data/
 *.sqlite
@@ -27,3 +33,6 @@ data/
 *.njsproj
 *.sln
 *.sw?
+
+# Projeto de referência (opcional - descomente se não quiser versionar)
+# esteira-contador-frontend/

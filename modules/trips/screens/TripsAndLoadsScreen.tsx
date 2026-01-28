@@ -43,6 +43,7 @@ export interface TripsAndLoadsScreenProps {
   onAddLoadWithDeliveries?: (tripId: string, payload: any) => void;
   onAttachLoadsToTrip?: (tripId: string, payload: { loadIds: string[]; vehicleTypeReq: string }) => void;
   onReorderDeliveries?: (tripId: string, legId: string, newOrder: Delivery[]) => void;
+  onEmitCTe?: (loadId: string) => void; // Handler para "emitir" CT-e (apenas visual/gerencial)
 }
 
 export function TripsAndLoadsScreen(props: TripsAndLoadsScreenProps) {
@@ -93,10 +94,10 @@ export function TripsAndLoadsScreen(props: TripsAndLoadsScreenProps) {
   };
 
   return (
-    <div className="flex flex-col h-screen md:ml-64 transition-all bg-gray-50">
+    <div className="flex flex-col h-full min-h-0 transition-all bg-gray-50">
 
       {/* GLOBAL HEADER: Controls View Mode, Filters & Main Actions */}
-      <div className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between shrink-0 z-20 relative shadow-sm">
+      <div className="bg-white border-b border-gray-200 px-3 sm:px-4 lg:px-6 py-3 lg:py-4 flex items-center justify-between shrink-0 z-20 relative shadow-sm">
 
         {/* Left: View Toggle */}
         <div className="bg-gray-100 p-1 rounded-xl flex items-center gap-1 shadow-inner">
@@ -119,12 +120,12 @@ export function TripsAndLoadsScreen(props: TripsAndLoadsScreenProps) {
         </div>
 
         {/* Center: Search Bar */}
-        <div className="flex-1 max-w-md mx-6 relative group">
+        <div className="flex-1 max-w-md mx-3 sm:mx-4 lg:mx-6 relative group">
           <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 group-hover:text-black transition-colors" size={18} />
           <input
             type="text"
             placeholder={viewMode === 'TRIPS' ? "Buscar viagem, placa, motorista..." : "Buscar carga, cliente, cidade..."}
-            className="w-full bg-gray-50 border-2 border-transparent focus:border-gray-200 focus:bg-white rounded-2xl pl-12 pr-4 py-3 text-sm font-bold outline-none transition-all placeholder:font-medium placeholder:text-gray-400"
+            className="w-full bg-gray-50 border-2 border-transparent focus:border-gray-200 focus:bg-white rounded-2xl pl-12 pr-4 py-3 text-sm font-bold outline-none transition-all placeholder:font-medium placeholder:text-gray-500"
             value={searchTerm}
             onChange={e => setSearchTerm(e.target.value)}
           />
@@ -166,15 +167,17 @@ export function TripsAndLoadsScreen(props: TripsAndLoadsScreenProps) {
         </div>
       </div>
 
-      <div className="flex-1 overflow-hidden relative">
+      <div className="flex-1 overflow-hidden relative min-h-0">
         {viewMode === 'TRIPS' ? (
           <div className="absolute inset-0">
             <TripBoardV2
               {...props}
               trips={filteredTrips}
               onCreateNew={() => setIsWizardOpen(true)}
+              onRequestScheduleLoad={(load) => setSchedulingLoad(load)}
               showFilters={showFilters}
               onCloseFilters={() => setShowFilters(false)}
+              onEmitCTe={props.onEmitCTe}
             />
           </div>
         ) : (
@@ -226,7 +229,9 @@ export function TripsAndLoadsScreen(props: TripsAndLoadsScreenProps) {
           // Note: The prop expects (load, vehicle, segment, customOrigin, controlNumber)
           // But our new modal simplifies this. We might need to adjust or pass defaults.
           // For now, passing defaults for segment/controlNumber as they are not in the simplified PDF design.
-          props.onScheduleLoad(load, vehicle, load.vehicleTypeReq || 'Carreta', load.originCity, 'AUTO');
+          // Não usar control_number aqui (será gerado pelo sistema depois).
+          // Segment/origem são usados apenas para o protótipo montar a viagem inicial.
+          props.onScheduleLoad(load, vehicle, load.vehicleTypeReq || 'Carreta', load.originCity, '');
           setSchedulingLoad(null);
         }}
       />

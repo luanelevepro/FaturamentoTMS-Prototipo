@@ -8,23 +8,32 @@ function groupBy(rows, key) {
   return map;
 }
 
-export function buildBootstrapPayload(db) {
-  const clients = db.prepare(`
+async function tableInfo(db, tableName) {
+  try {
+    return await db.all(`PRAGMA table_info(${tableName})`);
+  } catch {
+    return [];
+  }
+}
+
+export async function buildBootstrapPayload(db) {
+  const clients = await db.all(`
     SELECT
       id,
       name,
       address
     FROM clients
     ORDER BY name
-  `).all();
+  `);
 
-  const cities = db.prepare(`
+  const citiesRaw = await db.all(`
     SELECT full_name
     FROM cities
     ORDER BY full_name
-  `).all().map(r => r.full_name);
+  `);
+  const cities = citiesRaw.map(r => r.full_name);
 
-  const vehicles = db.prepare(`
+  const vehicles = await db.all(`
     SELECT
       id,
       plate,
@@ -34,9 +43,15 @@ export function buildBootstrapPayload(db) {
       status
     FROM vehicles
     ORDER BY plate
-  `).all();
+  `);
 
-  const loads = db.prepare(`
+  const loadsInfo = await tableInfo(db, 'loads');
+  const hasLoadsWeight = loadsInfo.some(c => c.name === 'weight');
+  const hasLoadsVolume = loadsInfo.some(c => c.name === 'volume');
+  const hasLoadsPackages = loadsInfo.some(c => c.name === 'packages');
+  const hasLoadsMerchValue = loadsInfo.some(c => c.name === 'merchandise_value');
+
+  const loads = await db.all(`
     SELECT
       l.id,
       c.name AS clientName,
@@ -46,12 +61,19 @@ export function buildBootstrapPayload(db) {
       l.status,
       l.vehicle_type_req AS vehicleTypeReq,
       l.observations
+      ${hasLoadsWeight ? ', l.weight AS weight' : ''}
+      ${hasLoadsVolume ? ', l.volume AS volume' : ''}
+      ${hasLoadsPackages ? ', l.packages AS packages' : ''}
+      ${hasLoadsMerchValue ? ', l.merchandise_value AS merchandiseValue' : ''}
     FROM loads l
     JOIN clients c ON c.id = l.client_id
     ORDER BY l.collection_date DESC, l.id
-  `).all();
+  `);
 
-  const availableDocs = db.prepare(`
+  const availInfo = await tableInfo(db, 'available_documents');
+  const hasAvailIsSub = availInfo.some(c => c.name === 'is_subcontracted');
+
+  const availableDocsRaw = await db.all(`
     SELECT
       id,
       number,
@@ -60,6 +82,7 @@ export function buildBootstrapPayload(db) {
       linked_cte_number AS linkedCteNumber,
       dfe_key AS dfeKey,
       related_dfe_keys AS relatedDfeKeys,
+      ${hasAvailIsSub ? 'is_subcontracted AS isSubcontracted,' : '0 AS isSubcontracted,'}
       value,
       weight,
       recipient_name AS recipientName,
@@ -68,12 +91,15 @@ export function buildBootstrapPayload(db) {
       emission_date AS emissionDate
     FROM available_documents
     ORDER BY emission_date DESC, id
-  `).all().map(r => ({
+  `);
+
+  const availableDocs = availableDocsRaw.map(r => ({
     ...r,
-    relatedDfeKeys: r.relatedDfeKeys ? JSON.parse(r.relatedDfeKeys) : undefined
+    relatedDfeKeys: r.relatedDfeKeys ? JSON.parse(r.relatedDfeKeys) : undefined,
+    isSubcontracted: !!r.isSubcontracted
   }));
 
-  const tripRows = db.prepare(`
+  const tripRows = await db.all(`
     SELECT
       id,
       created_at AS createdAt,
@@ -91,9 +117,9 @@ export function buildBootstrapPayload(db) {
       proof_of_delivery AS proofOfDelivery
     FROM trips
     ORDER BY datetime(created_at) DESC
-  `).all();
+  `);
 
-  const legRows = db.prepare(`
+  const legRows = await db.all(`
     SELECT
       id,
       trip_id AS tripId,
@@ -108,9 +134,9 @@ export function buildBootstrapPayload(db) {
       segment
     FROM legs
     ORDER BY trip_id, sequence
-  `).all();
+  `);
 
-  const deliveryRows = db.prepare(`
+  const deliveryRows = await db.all(`
     SELECT
       id,
       leg_id AS legId,
@@ -122,9 +148,9 @@ export function buildBootstrapPayload(db) {
       proof_of_delivery AS proofOfDelivery
     FROM deliveries
     ORDER BY leg_id, sequence
-  `).all();
+  `);
 
-  const docRows = db.prepare(`
+  const docRowsRaw = await db.all(`
     SELECT
       id,
       delivery_id AS deliveryId,
@@ -138,7 +164,9 @@ export function buildBootstrapPayload(db) {
       weight
     FROM documents
     ORDER BY delivery_id, id
-  `).all().map(r => ({
+  `);
+
+  const docRows = docRowsRaw.map(r => ({
     ...r,
     relatedDfeKeys: r.relatedDfeKeys ? JSON.parse(r.relatedDfeKeys) : undefined
   }));
